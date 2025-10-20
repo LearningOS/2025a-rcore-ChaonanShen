@@ -155,10 +155,12 @@ impl TaskManager {
         }
     }
 
-    /// 检查start_vpn~end_vpn虚拟地址范围内，没有被映射的页面（用于sys_mmap前期检查）
+    /// 检查start_vpn~end_vpn虚拟地址范围内，确认没有被映射的页面（用于sys_mmap前期检查）
     fn check_not_mapped(&self, start_vpn: VirtPageNum, end_vpn: VirtPageNum) -> bool {
         let inner = self.inner.exclusive_access();
-        inner.tasks[inner.current_task].memory_set.check_not_mapped(start_vpn, end_vpn)
+        inner.tasks[inner.current_task]
+            .memory_set
+            .check_not_mapped(start_vpn, end_vpn)
     }
 
     /// 对当前task进行mmap映射
@@ -175,7 +177,16 @@ impl TaskManager {
         if prot & 0x4 != 0 {
             map_perm |= MapPermission::X;
         }
-        inner.tasks[current].memory_set.insert_framed_area(start_va, end_va, map_perm)
+        inner.tasks[current]
+            .memory_set
+            .insert_framed_area(start_va, end_va, map_perm)
+    }
+
+    /// 对当前task进行munmap映射
+    fn task_munmap(&self, start_va: VirtAddr, end_va: VirtAddr) -> bool {
+        let mut inner = self.inner.exclusive_access();
+        let current = inner.current_task;
+        inner.tasks[current].memory_set.remove_map_area(start_va, end_va)
     }
 }
 
@@ -227,7 +238,7 @@ pub fn change_program_brk(size: i32) -> Option<usize> {
     TASK_MANAGER.change_current_program_brk(size)
 }
 
-/// 检查start_vpn~end_vpn虚拟地址范围内，没有被映射的页面（用于sys_mmap前期检查）
+/// 检查start_vpn~end_vpn虚拟地址范围内，确认没有被映射的页面（用于sys_mmap前期检查）
 pub fn check_not_mapped(start_vpn: VirtPageNum, end_vpn: VirtPageNum) -> bool {
     TASK_MANAGER.check_not_mapped(start_vpn, end_vpn)
 }
@@ -235,4 +246,9 @@ pub fn check_not_mapped(start_vpn: VirtPageNum, end_vpn: VirtPageNum) -> bool {
 /// 对当前task进行mmap映射
 pub fn task_mmap(start_va: VirtAddr, end_va: VirtAddr, prot: usize) -> bool {
     TASK_MANAGER.task_mmap(start_va, end_va, prot)
+}
+
+/// 对当前task进行munmap映射
+pub fn task_munmap(start_va: VirtAddr, end_va: VirtAddr) -> bool {
+    TASK_MANAGER.task_munmap(start_va, end_va)
 }

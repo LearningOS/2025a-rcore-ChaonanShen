@@ -51,7 +51,8 @@ impl MemorySet {
     pub fn token(&self) -> usize {
         self.page_table.token()
     }
-    /// Assume that no conflicts.
+
+    /// 遇到物理内存不足会返回false
     pub fn insert_framed_area(
         &mut self,
         start_va: VirtAddr,
@@ -62,6 +63,29 @@ impl MemorySet {
             MapArea::new(start_va, end_va, MapType::Framed, permission),
             None,
         )
+    }
+
+
+    /// 移除一个MapArea - 不存在这个MapArea返回false
+    pub fn remove_map_area(
+        &mut self,
+        start_va: VirtAddr,
+        end_va: VirtAddr,
+    ) -> bool {
+        // 找到对应的MapArea
+        let start_vpn = start_va.floor();
+        let end_vpn = end_va.ceil();
+
+        if let Some(index) = self.areas.iter().position(|area| {
+            area.vpn_range.l == start_vpn && area.vpn_range.r == end_vpn
+        }) {
+            // 找到后移除index位置元素
+            let mut map_area = self.areas.remove(index);
+            map_area.unmap(&mut self.page_table);
+            true
+        } else {
+            false
+        }
     }
 
     // fn push(&mut self, mut map_area: MapArea, data: Option<&[u8]>) {
@@ -288,8 +312,9 @@ impl MemorySet {
     /// 如果从start_vpn~end_vpn都没被映射，就返回true
     pub fn check_not_mapped(&self, start_vpn: VirtPageNum, end_vpn: VirtPageNum) -> bool {
         let vpn_range = VPNRange::new(start_vpn, end_vpn);
+        // TODO(scn): 改成函数式写法
         for vpn in vpn_range {
-            // 如果vpn已经被映射
+            // 如果vpn已经被映射 - 说明有问题
             if self.check_mapped_one(vpn) {
                 return false;
             }
