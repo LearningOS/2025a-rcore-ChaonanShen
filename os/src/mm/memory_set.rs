@@ -57,19 +57,32 @@ impl MemorySet {
         start_va: VirtAddr,
         end_va: VirtAddr,
         permission: MapPermission,
-    ) {
+    ) -> bool {
         self.push(
             MapArea::new(start_va, end_va, MapType::Framed, permission),
             None,
-        );
+        )
     }
-    fn push(&mut self, mut map_area: MapArea, data: Option<&[u8]>) {
-        map_area.map(&mut self.page_table);
+
+    // fn push(&mut self, mut map_area: MapArea, data: Option<&[u8]>) {
+    //     map_area.map(&mut self.page_table);
+    //     if let Some(data) = data {
+    //         map_area.copy_data(&mut self.page_table, data);
+    //     }
+    //     self.areas.push(map_area);
+    // }
+
+    fn push(&mut self, mut map_area: MapArea, data: Option<&[u8]>) -> bool {
+        if !map_area.map(&mut self.page_table) {
+            return false;
+        }
         if let Some(data) = data {
             map_area.copy_data(&mut self.page_table, data);
         }
         self.areas.push(map_area);
+        true
     }
+
     /// Mention that trampoline is not collected by areas.
     fn map_trampoline(&mut self) {
         self.page_table.map(
@@ -262,6 +275,27 @@ impl MemorySet {
             false
         }
     }
+
+    fn check_mapped_one(&self, vpn: VirtPageNum) -> bool {
+        // 最后一级页表是not valid，要么就是没映射，还要就是映射了但已经被换出（总归当前PTE无效）
+        if let Some(pte) = self.translate(vpn) {
+            pte.is_valid()
+        } else {
+            false
+        }
+    }
+
+    /// 如果从start_vpn~end_vpn都没被映射，就返回true
+    pub fn check_not_mapped(&self, start_vpn: VirtPageNum, end_vpn: VirtPageNum) -> bool {
+        let vpn_range = VPNRange::new(start_vpn, end_vpn);
+        for vpn in vpn_range {
+            // 如果vpn已经被映射
+            if self.check_mapped_one(vpn) {
+                return false;
+            }
+        }
+        true
+    }
 }
 /// map area structure, controls a contiguous piece of virtual memory
 pub struct MapArea {
@@ -287,21 +321,44 @@ impl MapArea {
             map_perm,
         }
     }
-    pub fn map_one(&mut self, page_table: &mut PageTable, vpn: VirtPageNum) {
+
+    // pub fn map_one(&mut self, page_table: &mut PageTable, vpn: VirtPageNum) {
+    //     let ppn: PhysPageNum;
+    //     match self.map_type {
+    //         MapType::Identical => {
+    //             ppn = PhysPageNum(vpn.0);
+    //         }
+    //         MapType::Framed => {
+    //             let frame = frame_alloc().unwrap();
+    //             ppn = frame.ppn;
+    //             self.data_frames.insert(vpn, frame);
+    //         }
+    //     }
+    //     let pte_flags = PTEFlags::from_bits(self.map_perm.bits).unwrap();
+    //     page_table.map(vpn, ppn, pte_flags);
+    // }
+
+    // 目前只检查物理内存不足这一错误
+    pub fn map_one(&mut self, page_table: &mut PageTable, vpn: VirtPageNum) -> bool {
         let ppn: PhysPageNum;
         match self.map_type {
             MapType::Identical => {
                 ppn = PhysPageNum(vpn.0);
             }
             MapType::Framed => {
-                let frame = frame_alloc().unwrap();
-                ppn = frame.ppn;
-                self.data_frames.insert(vpn, frame);
+                if let Some(frame) = frame_alloc() {
+                    ppn = frame.ppn;
+                    self.data_frames.insert(vpn, frame);
+                } else {
+                    return false;
+                }
             }
         }
         let pte_flags = PTEFlags::from_bits(self.map_perm.bits).unwrap();
         page_table.map(vpn, ppn, pte_flags);
+        true
     }
+
     #[allow(unused)]
     pub fn unmap_one(&mut self, page_table: &mut PageTable, vpn: VirtPageNum) {
         if self.map_type == MapType::Framed {
@@ -309,11 +366,22 @@ impl MapArea {
         }
         page_table.unmap(vpn);
     }
-    pub fn map(&mut self, page_table: &mut PageTable) {
+
+    // pub fn map(&mut self, page_table: &mut PageTable) {
+    //     for vpn in self.vpn_range {
+    //         self.map_one(page_table, vpn);
+    //     }
+    // }
+
+    pub fn map(&mut self, page_table: &mut PageTable) -> bool {
         for vpn in self.vpn_range {
-            self.map_one(page_table, vpn);
+            if !self.map_one(page_table, vpn) {
+                return false;
+            }
         }
+        true
     }
+
     #[allow(unused)]
     pub fn unmap(&mut self, page_table: &mut PageTable) {
         for vpn in self.vpn_range {
@@ -330,7 +398,7 @@ impl MapArea {
     #[allow(unused)]
     pub fn append_to(&mut self, page_table: &mut PageTable, new_end: VirtPageNum) {
         for vpn in VPNRange::new(self.vpn_range.get_end(), new_end) {
-            self.map_one(page_table, vpn)
+            self.map_one(page_table, vpn);
         }
         self.vpn_range = VPNRange::new(self.vpn_range.get_start(), new_end);
     }

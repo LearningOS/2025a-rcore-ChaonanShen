@@ -15,6 +15,7 @@ mod switch;
 mod task;
 
 use crate::loader::{get_app_data, get_num_app};
+use crate::mm::{MapPermission, VirtAddr, VirtPageNum};
 use crate::sync::UPSafeCell;
 use crate::trap::TrapContext;
 use alloc::vec::Vec;
@@ -153,6 +154,29 @@ impl TaskManager {
             panic!("All applications completed!");
         }
     }
+
+    /// 检查start_vpn~end_vpn虚拟地址范围内，没有被映射的页面（用于sys_mmap前期检查）
+    fn check_not_mapped(&self, start_vpn: VirtPageNum, end_vpn: VirtPageNum) -> bool {
+        let inner = self.inner.exclusive_access();
+        inner.tasks[inner.current_task].memory_set.check_not_mapped(start_vpn, end_vpn)
+    }
+
+    /// 对当前task进行mmap映射
+    fn task_mmap(&self, start_va: VirtAddr, end_va: VirtAddr, prot: usize) -> bool {
+        let mut inner = self.inner.exclusive_access();
+        let current = inner.current_task;
+        let mut map_perm = MapPermission::U;
+        if prot & 0x1 != 0 {
+            map_perm |= MapPermission::R;
+        }
+        if prot & 0x2 != 0 {
+            map_perm |= MapPermission::W;
+        }
+        if prot & 0x4 != 0 {
+            map_perm |= MapPermission::X;
+        }
+        inner.tasks[current].memory_set.insert_framed_area(start_va, end_va, map_perm)
+    }
 }
 
 /// Run the first task in task list.
@@ -201,4 +225,14 @@ pub fn current_trap_cx() -> &'static mut TrapContext {
 /// Change the current 'Running' task's program break
 pub fn change_program_brk(size: i32) -> Option<usize> {
     TASK_MANAGER.change_current_program_brk(size)
+}
+
+/// 检查start_vpn~end_vpn虚拟地址范围内，没有被映射的页面（用于sys_mmap前期检查）
+pub fn check_not_mapped(start_vpn: VirtPageNum, end_vpn: VirtPageNum) -> bool {
+    TASK_MANAGER.check_not_mapped(start_vpn, end_vpn)
+}
+
+/// 对当前task进行mmap映射
+pub fn task_mmap(start_va: VirtAddr, end_va: VirtAddr, prot: usize) -> bool {
+    TASK_MANAGER.task_mmap(start_va, end_va, prot)
 }
