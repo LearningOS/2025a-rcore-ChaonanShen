@@ -188,6 +188,12 @@ impl TaskManager {
         let current = inner.current_task;
         inner.tasks[current].memory_set.remove_map_area(start_va, end_va)
     }
+
+    fn task_translated_byte_buffer(&self, ptr: *const u8, len: usize) -> Vec<&'static mut [u8]> {
+        let inner = self.inner.exclusive_access();
+        let current = inner.current_task;
+        inner.tasks[current].memory_set.translated_byte_buffer(ptr, len)
+    }
 }
 
 /// Run the first task in task list.
@@ -251,4 +257,9 @@ pub fn task_mmap(start_va: VirtAddr, end_va: VirtAddr, prot: usize) -> bool {
 /// 对当前task进行munmap映射
 pub fn task_munmap(start_va: VirtAddr, end_va: VirtAddr) -> bool {
     TASK_MANAGER.task_munmap(start_va, end_va)
+}
+
+/// 使用当前task页表转换某个虚拟地址，返回对应物理地址长为len的字节序列(可能跨物理页)
+pub fn task_translated_byte_buffer(ptr: *const u8, len: usize) -> Vec<&'static mut [u8]> {
+    TASK_MANAGER.task_translated_byte_buffer(ptr, len)
 }

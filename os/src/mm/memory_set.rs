@@ -7,6 +7,7 @@ use super::{StepByOne, VPNRange};
 use crate::config::{
     KERNEL_STACK_SIZE, MEMORY_END, PAGE_SIZE, TRAMPOLINE, TRAP_CONTEXT_BASE, USER_STACK_SIZE,
 };
+use crate::mm::translated_byte_buffer;
 use crate::sync::UPSafeCell;
 use alloc::collections::BTreeMap;
 use alloc::sync::Arc;
@@ -258,6 +259,7 @@ impl MemorySet {
             elf.header.pt2.entry_point() as usize,
         )
     }
+
     /// Change page table by writing satp CSR Register.
     pub fn activate(&self) {
         let satp = self.page_table.token();
@@ -266,10 +268,17 @@ impl MemorySet {
             asm!("sfence.vma");
         }
     }
+
     /// Translate a virtual page number to a page table entry
     pub fn translate(&self, vpn: VirtPageNum) -> Option<PageTableEntry> {
         self.page_table.translate(vpn)
     }
+
+    /// MemorySet借助PageTable返回 ptr虚地址起始len长度 对应的 物理页字节序列(可能跨多个物理页)
+    pub fn translated_byte_buffer(&self, ptr: *const u8, len: usize) -> Vec<&'static mut [u8]> {
+        translated_byte_buffer(self.token(), ptr, len)
+    }
+
     /// shrink the area to new_end
     #[allow(unused)]
     pub fn shrink_to(&mut self, start: VirtAddr, new_end: VirtAddr) -> bool {

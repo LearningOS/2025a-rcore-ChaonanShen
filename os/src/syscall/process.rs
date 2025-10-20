@@ -1,10 +1,11 @@
 //! Process management syscalls
 use crate::{
-    mm::{VirtAddr, VirtPageNum},
+    mm::{ VirtAddr, VirtPageNum},
     task::{
         change_program_brk, check_not_mapped, exit_current_and_run_next,
-        suspend_current_and_run_next, task_mmap, task_munmap,
+        suspend_current_and_run_next, task_mmap, task_munmap, task_translated_byte_buffer,
     },
+    timer::get_time_us,
 };
 
 #[repr(C)]
@@ -31,12 +32,32 @@ pub fn sys_yield() -> isize {
 /// YOUR JOB: get time with second and microsecond
 /// HINT: You might reimplement it with virtual memory management.
 /// HINT: What if [`TimeVal`] is splitted by two pages ?
-pub fn sys_get_time(_ts: *mut TimeVal, _tz: usize) -> isize {
+pub fn sys_get_time(ts: *mut TimeVal, _tz: usize) -> isize {
     trace!("kernel: sys_get_time"); // 写入TimeVal地址
+    let us = get_time_us();
+    let tv = TimeVal {
+        sec: us / 1_000_000,
+        usec: us % 1_000_000,
+    };
+
+    // ts是用户态的虚拟地址，得转换为物理页的字节数组才能得到真正内容
+    let src = unsafe { core::slice::from_raw_parts(&tv as *const TimeVal as *const u8, core::mem::size_of::<TimeVal>()) };
+    let dsts = task_translated_byte_buffer(ts as *const u8, core::mem::size_of::<TimeVal>());
+
+    let mut idx = 0;
+    for dst in dsts {
+        // get能够安全返回切片
+        if let Some(sub_src) = src.get(idx..idx+dst.len()) {
+            dst.copy_from_slice(sub_src);
+            idx += dst.len();
+        } else {
+            return -1;
+        }
+    }
     0
 }
 
-/// TODO: Finish sys_trace to pass testcases
+/// YOUR JOB: Finish sys_trace to pass testcases
 /// HINT: You might reimplement it with virtual memory management.
 pub fn sys_trace(_trace_request: usize, _id: usize, _data: usize) -> isize {
     trace!("kernel: sys_trace");
