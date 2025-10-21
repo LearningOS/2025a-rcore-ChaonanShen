@@ -58,6 +58,10 @@ impl PageTableEntry {
     pub fn is_valid(&self) -> bool {
         (self.flags() & PTEFlags::V) != PTEFlags::empty()
     }
+    /// The page pointered by page table entry is usre accessible?
+    pub fn is_user_accessible(&self) -> bool {
+        (self.flags() & PTEFlags::U) != PTEFlags::empty()
+    }
     /// The page pointered by page table entry is readable?
     pub fn readable(&self) -> bool {
         (self.flags() & PTEFlags::R) != PTEFlags::empty()
@@ -157,6 +161,9 @@ impl PageTable {
     }
 }
 
+// TODO(scn): translated_byte_buffer/translated_ua2write/translated_ua2read这三个应该能合并下，重复的太多了
+// tranlated_byte_buffer是直接不做任何检查，甚至pte直接unwrap()
+
 /// Translate&Copy a ptr[u8] array with LENGTH len to a mutable u8 Vec through page table
 pub fn translated_byte_buffer(token: usize, ptr: *const u8, len: usize) -> Vec<&'static mut [u8]> {
     let page_table = PageTable::from_token(token);
@@ -178,4 +185,68 @@ pub fn translated_byte_buffer(token: usize, ptr: *const u8, len: usize) -> Vec<&
         start = end_va.into();
     }
     v
+}
+
+/// 传入用户态虚地址ptr（并要检查是否有写权限），未来将写入数据
+pub fn translated_ua2write(token: usize, ptr: *const u8, len: usize) -> Option<Vec<&'static mut [u8]>> {
+    let page_table = PageTable::from_token(token);
+    let mut start = ptr as usize;
+    let end = start + len;
+    let mut v = Vec::new();
+    while start < end {
+        let start_va = VirtAddr::from(start);
+        let mut vpn = start_va.floor();
+        if let Some(pte) = page_table.translate(vpn) {
+            // 检查pte的valid/user_accessible/writable
+            if pte.is_valid() && pte.is_user_accessible() && pte.writable() {
+                let ppn = pte.ppn();
+                vpn.step();
+                let mut end_va: VirtAddr = vpn.into();
+                end_va = end_va.min(VirtAddr::from(end));
+                if end_va.page_offset() == 0 {
+                    v.push(&mut ppn.get_bytes_array()[start_va.page_offset()..]);
+                } else {
+                    v.push(&mut ppn.get_bytes_array()[start_va.page_offset()..end_va.page_offset()]);
+                }
+                start = end_va.into();
+            } else {
+                return None;
+            }
+        } else {
+            return None;
+        }
+    }
+    Some(v)
+}
+
+/// 传入用户态虚地址ptr（并检查是否有读权限），未来将读取数据
+pub fn translated_ua2read(token: usize, ptr: *const u8, len: usize) -> Option<Vec<&'static [u8]>> {
+    let page_table = PageTable::from_token(token);
+    let mut start = ptr as usize;
+    let end = start + len;
+    let mut v = Vec::new();
+    while start < end {
+        let start_va = VirtAddr::from(start);
+        let mut vpn = start_va.floor();
+        if let Some(pte) = page_table.translate(vpn) {
+            // 检查pte的valid/user_accessible/readable
+            if pte.is_valid() && pte.is_user_accessible() && pte.readable() {
+                let ppn = pte.ppn();
+                vpn.step();
+                let mut end_va: VirtAddr = vpn.into();
+                end_va = end_va.min(VirtAddr::from(end));
+                if end_va.page_offset() == 0 {
+                    v.push(&ppn.get_bytes_array()[start_va.page_offset()..]);
+                } else {
+                    v.push(&ppn.get_bytes_array()[start_va.page_offset()..end_va.page_offset()]);
+                }
+                start = end_va.into();
+            } else {
+                return None;
+            }
+        } else {
+            return None;
+        }
+    }
+    Some(v)
 }

@@ -14,6 +14,7 @@ mod switch;
 #[allow(clippy::module_inception)]
 mod task;
 
+use crate::config::MAX_SYSCALL_NUM;
 use crate::loader::{get_app_data, get_num_app};
 use crate::mm::{MapPermission, VirtAddr, VirtPageNum};
 use crate::sync::UPSafeCell;
@@ -194,6 +195,18 @@ impl TaskManager {
         let current = inner.current_task;
         inner.tasks[current].memory_set.translated_byte_buffer(ptr, len)
     }
+
+    fn task_add_syscall_count(&self, syscall_id: usize) {
+        let mut inner = self.inner.exclusive_access();
+        let current = inner.current_task;
+        inner.tasks[current].task_syscall_counts[syscall_id] += 1;
+    }
+
+    fn task_get_syscall_count(&self, syscall_id: usize) -> isize {
+        let inner = self.inner.exclusive_access();
+        let current = inner.current_task;
+        inner.tasks[current].task_syscall_counts[syscall_id] as isize
+    }
 }
 
 /// Run the first task in task list.
@@ -262,4 +275,20 @@ pub fn task_munmap(start_va: VirtAddr, end_va: VirtAddr) -> bool {
 /// 使用当前task页表转换某个虚拟地址，返回对应物理地址长为len的字节序列(可能跨物理页)
 pub fn task_translated_byte_buffer(ptr: *const u8, len: usize) -> Vec<&'static mut [u8]> {
     TASK_MANAGER.task_translated_byte_buffer(ptr, len)
+}
+
+/// 增加当前task对syscall_id调用次数
+pub fn task_add_syscall_count(syscall_id: usize) {
+    if syscall_id > MAX_SYSCALL_NUM {
+        return;
+    }
+    TASK_MANAGER.task_add_syscall_count(syscall_id);
+}
+
+/// 查询当前task对syscall_id调用次数
+pub fn task_get_syscall_count(syscall_id: usize) -> isize {
+    if syscall_id > MAX_SYSCALL_NUM {
+        return -1;
+    }
+    TASK_MANAGER.task_get_syscall_count(syscall_id)
 }
