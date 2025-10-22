@@ -1,10 +1,11 @@
 use crate::{
     fs::{open_file, OpenFlags},
-    mm::{translated_ref, translated_refmut, translated_str},
+    mm::{translated_refmut, translated_str, translated_ua2read, translated_ua2write, translated_ref},
     task::{
         current_process, current_task, current_user_token, exit_current_and_run_next, pid2process,
         suspend_current_and_run_next, SignalFlags,
     },
+    timer::get_time_us,
 };
 use alloc::{string::String, sync::Arc, vec::Vec};
 
@@ -120,12 +121,57 @@ pub fn sys_waitpid(pid: isize, exit_code_ptr: *mut i32) -> isize {
         // ++++ temporarily access child PCB exclusively
         let exit_code = child.inner_exclusive_access().exit_code;
         // ++++ release child PCB
+        // exit_code_ptr是个用户态虚地址，写入的话需要进行转换
         *translated_refmut(inner.memory_set.token(), exit_code_ptr) = exit_code;
         found_pid as isize
     } else {
         -2
     }
     // ---- release current PCB automatically
+}
+
+/// 物理地址的src 拷贝数据到 用户态虚地址的dst - 内核态数据复制到用户空间虚地址，注意要检查虚地址是否有写权限
+#[allow(unused)]
+fn pa_copyto_uva(src: *const u8, src_len: usize, dst: *const u8, dst_len: usize) -> bool {
+    if let Some(dsts) = translated_ua2write(current_user_token(), dst, dst_len) {
+        let src = unsafe { core::slice::from_raw_parts(src, src_len) };
+
+        let mut idx = 0;
+        for dst in dsts {
+            // get能够安全返回切片
+            if let Some(sub_src) = src.get(idx..idx + dst.len()) {
+                dst.copy_from_slice(sub_src);
+                idx += dst.len();
+            } else {
+                return false;
+            }
+        }
+        true
+    } else {
+        false
+    }
+}
+
+/// 用户态虚地址的src 拷贝数据到 物理地址的dst - 从用户空间虚地址读取数据到内核态，注意要检查虚地址是否有读权限
+#[allow(unused)]
+fn uva_copyto_pa(src: *const u8, src_len: usize, dst: *mut u8, dst_len: usize) -> bool {
+    if let Some(srcs) = translated_ua2read(current_user_token(), src, src_len) {
+        let dst = unsafe { core::slice::from_raw_parts_mut(dst, dst_len) };
+
+        let mut idx = 0;
+        for src in srcs {
+            // get能够安全返回切片
+            if let Some(sub_dst) = dst.get_mut(idx..idx + src.len()) {
+                sub_dst.copy_from_slice(src);
+                idx += src.len();
+            } else {
+                return false;
+            }
+        }
+        true
+    } else {
+        false
+    }
 }
 
 /// kill syscall
@@ -151,12 +197,26 @@ pub fn sys_kill(pid: usize, signal: u32) -> isize {
 /// YOUR JOB: get time with second and microsecond
 /// HINT: You might reimplement it with virtual memory management.
 /// HINT: What if [`TimeVal`] is splitted by two pages ?
-pub fn sys_get_time(_ts: *mut TimeVal, _tz: usize) -> isize {
+pub fn sys_get_time(ts: *mut TimeVal, _tz: usize) -> isize {
     trace!(
-        "kernel:pid[{}] sys_get_time NOT IMPLEMENTED",
+        "kernel:pid[{}] sys_get_time",
         current_task().unwrap().process.upgrade().unwrap().getpid()
     );
-    -1
+
+    let us = get_time_us();
+
+    // 目标就是把内核态的tv拷贝到用户态的ts虚地址（把ts虚地址转为物理地址上字节序列，然后就能直接复制了）
+    let tv = TimeVal {
+        sec: us / 1_000_000,
+        usec: us % 1_000_000,
+    };
+
+    let sz = core::mem::size_of::<TimeVal>();
+    if pa_copyto_uva(&tv as *const TimeVal as *const u8, sz, ts as *const u8, sz) {
+        0
+    } else {
+        -1
+    }
 }
 
 /// mmap syscall
