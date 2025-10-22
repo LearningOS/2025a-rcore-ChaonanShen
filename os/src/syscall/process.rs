@@ -3,10 +3,13 @@ use alloc::sync::Arc;
 
 use crate::{
     loader::get_app_data_by_name,
-    mm::{translated_refmut, translated_str, translated_ua2read, translated_ua2write},
+    mm::{
+        check_not_mapped, translated_refmut, translated_str, translated_ua2read,
+        translated_ua2write, VirtAddr, VirtPageNum,
+    },
     task::{
         add_task, current_task, current_user_token, exit_current_and_run_next,
-        suspend_current_and_run_next,
+        suspend_current_and_run_next, task_mmap,
     },
     timer::get_time_us,
 };
@@ -177,13 +180,38 @@ pub fn sys_get_time(ts: *mut TimeVal, _tz: usize) -> isize {
     }
 }
 
-/// YOUR JOB: Implement mmap.
-pub fn sys_mmap(_start: usize, _len: usize, _port: usize) -> isize {
-    trace!(
-        "kernel:pid[{}] sys_mmap NOT IMPLEMENTED",
-        current_task().unwrap().pid.0
-    );
-    -1
+// YOUR JOB: Implement mmap.
+/// 当前task的TCB的MemorySet(包含页表)中，将[start, start+len)段映射到物理页
+/// 出错类型：都返回-1
+/// 1. start没有按页对齐
+/// 2. [start, start+len)中已经存在被映射的页（说明当前mmap跟之前的mmap重叠了）
+/// 3. prot & !0x7 != 0或者prot & 0x7 = 0 - prot 0-R 1-W 2-X 其他位必须为0
+/// 4. 物理内存不足
+pub fn sys_mmap(start: usize, len: usize, prot: usize) -> isize {
+    trace!("kernel: sys_mmap");
+
+    let start_va: VirtAddr = start.into();
+    // 检查start_va是否对齐
+    if !start_va.aligned() {
+        return -1;
+    }
+    // 检查prot位是否正确
+    if prot & !0x7 != 0 || prot & 0x7 == 0 {
+        return -1;
+    }
+    // 检查是否已经存在被映射的页面
+    let start_vpn: VirtPageNum = start_va.into();
+    let end_va: VirtAddr = (start + len).into();
+    let end_vpn: VirtPageNum = end_va.ceil();
+    if !check_not_mapped(current_user_token(), start_vpn, end_vpn) {
+        return -1;
+    }
+
+    if task_mmap(start_va, end_va, prot) {
+        0 // 操作成功返回0
+    } else {
+        -1
+    }
 }
 
 /// YOUR JOB: Implement munmap.

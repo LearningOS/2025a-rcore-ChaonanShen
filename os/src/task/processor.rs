@@ -9,6 +9,7 @@ use super::{fetch_task, TaskStatus};
 use super::{TaskContext, TaskControlBlock};
 use crate::sync::UPSafeCell;
 use crate::trap::TrapContext;
+use crate::mm::VirtAddr;
 use alloc::sync::Arc;
 use lazy_static::*;
 
@@ -54,6 +55,7 @@ lazy_static! {
 ///Loop `fetch_task` to get the process that needs to run, and switch the process through `__switch`
 pub fn run_tasks() {
     loop {
+        // 这两个获取独占锁的先后顺序，是不是有考虑
         let mut processor = PROCESSOR.exclusive_access();
         if let Some(task) = fetch_task() {
             let idle_task_cx_ptr = processor.get_idle_task_cx_ptr();
@@ -108,4 +110,15 @@ pub fn schedule(switched_task_cx_ptr: *mut TaskContext) {
     unsafe {
         __switch(switched_task_cx_ptr, idle_task_cx_ptr);
     }
+}
+
+// *** 对当前进程执行的函数 统一放置在此 ***
+
+/// 对当前进程的start_vpn~end_vpn范围进行mmap映射
+pub fn task_mmap(start_va: VirtAddr, end_va: VirtAddr, prot: usize) -> bool {
+    current_task()
+        .unwrap()
+        .inner_exclusive_access()
+        .memory_set
+        .mmap(start_va, end_va, prot)
 }

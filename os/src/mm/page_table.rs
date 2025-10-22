@@ -1,5 +1,5 @@
 //! Implementation of [`PageTableEntry`] and [`PageTable`].
-use super::{frame_alloc, FrameTracker, PhysAddr, PhysPageNum, StepByOne, VirtAddr, VirtPageNum};
+use super::{frame_alloc, FrameTracker, PhysAddr, PhysPageNum, StepByOne, VirtAddr, VirtPageNum, VPNRange};
 use alloc::string::String;
 use alloc::vec;
 use alloc::vec::Vec;
@@ -162,6 +162,16 @@ impl PageTable {
     pub fn token(&self) -> usize {
         8usize << 60 | self.root_ppn.0
     }
+
+    // 检查vpn页面是否已映射
+    pub fn check_mapped_one(&self, vpn: VirtPageNum) -> bool {
+        // 最后一级页表是not valid，要么就是没映射，还要就是映射了但已经被换出（总归当前PTE无效）
+        if let Some(pte) = self.translate(vpn) {
+            pte.is_valid()
+        } else {
+            false
+        }        
+    }
 }
 
 /// Translate&Copy a ptr[u8] array with LENGTH len to a mutable u8 Vec through page table
@@ -282,4 +292,18 @@ pub fn translated_ua2read(token: usize, ptr: *const u8, len: usize) -> Option<Ve
         }
     }
     Some(v)
+}
+
+/// 检查start_vpn~end_vpn范围内所有页面都没有被映射（用于mmap前检查）
+pub fn check_not_mapped(token: usize, start_vpn: VirtPageNum, end_vpn: VirtPageNum) -> bool {
+    let page_table = PageTable::from_token(token);
+    let vpn_range = VPNRange::new(start_vpn, end_vpn);
+    // TODO(scn): 改成函数式写法
+    for vpn in vpn_range {
+        // 如果vpn已经被映射 - 说明有问题
+        if page_table.check_mapped_one(vpn) {
+            return false;
+        }
+    }
+    true
 }
