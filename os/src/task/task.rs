@@ -20,7 +20,7 @@ pub struct TaskControlBlock {
     /// Kernel stack corresponding to PID
     pub kernel_stack: KernelStack,
 
-    /// Mutable
+    /// Mutable - 原来TCBInner的目的是保存可变部分，毕竟不可变部分没有并发访问问题
     inner: UPSafeCell<TaskControlBlockInner>,
 }
 
@@ -90,7 +90,7 @@ impl TaskControlBlockInner {
 impl TaskControlBlock {
     /// Create a new process
     ///
-    /// At present, it is only used for the creation of initproc
+    /// At present, it is only used for the creation of initproc 仅用于initproc的创建
     pub fn new(elf_data: &[u8]) -> Self {
         // memory_set with elf program headers/trampoline/trap context/user stack
         let (memory_set, user_sp, entry_point) = MemorySet::from_elf(elf_data);
@@ -130,6 +130,60 @@ impl TaskControlBlock {
             kernel_stack_top,
             trap_handler as usize,
         );
+        task_control_block
+    }
+
+    /// spawn = fork + exec 为什么fork得传入&Arc<Self>
+    pub fn spawn(self: &Arc<Self>, elf_data: &[u8]) -> Arc<Self> {
+        // memory_set with elf program headers/trampoline/trap context/user stack
+        let (memory_set, user_sp, entry_point) = MemorySet::from_elf(elf_data);
+        // TrapContext物理页也更新了
+        let trap_cx_ppn = memory_set
+            .translate(VirtAddr::from(TRAP_CONTEXT_BASE).into())
+            .unwrap()
+            .ppn();
+
+        // 分配pid/内核栈
+        let pid_handle = pid_alloc();
+        let kernel_stack = kstack_alloc();
+        let kernel_stack_top = kernel_stack.get_top();
+
+        // 新进程的TCB设置（注意，父进程依然执行sys_spawn后续命令返回，而新进程则是schedule->__switch切换后返回用户态执行）
+        // 新进程TaskContext和TrapContext都是重新初始化的，pc也是从user app的entry_point开始执行
+        let task_control_block = Arc::new(TaskControlBlock {
+            pid: pid_handle,
+            kernel_stack,
+            inner: unsafe {
+                UPSafeCell::new(TaskControlBlockInner {
+                    trap_cx_ppn,
+                    base_size: user_sp,
+                    task_cx: TaskContext::goto_trap_return(kernel_stack_top),
+                    task_status: TaskStatus::Ready,
+                    memory_set,
+                    parent: Some(Arc::downgrade(self)),
+                    children: Vec::new(),
+                    exit_code: 0,
+                    heap_bottom: user_sp,
+                    program_brk: user_sp,
+                })
+            },
+        });
+
+        // 父进程加入新进程TCB - 这个要不放到外边去做
+        self.inner_exclusive_access()
+            .children
+            .push(task_control_block.clone());
+
+        // 设置TrapContext，也即用户态状态
+        let trap_cx = task_control_block.inner_exclusive_access().get_trap_cx();
+        *trap_cx = TrapContext::app_init_context(
+            entry_point,
+            user_sp,
+            KERNEL_SPACE.exclusive_access().token(), // kernel satp保存在KERNEL_SPACE中
+            kernel_stack_top,
+            trap_handler as usize,
+        );
+
         task_control_block
     }
 
