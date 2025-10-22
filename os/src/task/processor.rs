@@ -7,9 +7,9 @@
 use super::__switch;
 use super::{fetch_task, TaskStatus};
 use super::{TaskContext, TaskControlBlock};
+use crate::mm::VirtAddr;
 use crate::sync::UPSafeCell;
 use crate::trap::TrapContext;
-use crate::mm::VirtAddr;
 use alloc::sync::Arc;
 use lazy_static::*;
 
@@ -121,4 +121,13 @@ pub fn task_mmap(start_va: VirtAddr, end_va: VirtAddr, prot: usize) -> bool {
         .inner_exclusive_access()
         .memory_set
         .mmap(start_va, end_va, prot)
+}
+
+/// 对当前task进行munmap映射
+pub fn task_munmap(start_va: VirtAddr, end_va: VirtAddr) -> bool {
+    current_task()
+        .unwrap()
+        .inner_exclusive_access()
+        .memory_set
+        .remove_area(start_va.floor(), end_va.ceil())
 }
