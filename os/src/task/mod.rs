@@ -34,7 +34,7 @@ pub use id::{kstack_alloc, pid_alloc, KernelStack, PidHandle};
 pub use manager::add_task;
 pub use processor::{
     current_task, current_trap_cx, current_user_token, run_tasks, schedule, take_current_task,
-    Processor,
+    task_mmap, Processor,
 };
 /// Suspend the current 'Running' task and run the next task in task list.
 pub fn suspend_current_and_run_next() {
@@ -82,6 +82,7 @@ pub fn exit_current_and_run_next(exit_code: i32) {
 
     // ++++++ access initproc TCB exclusively
     {
+        // 父进程退出了，把还未结束的子进程作为孤儿进程给initproc处理
         let mut initproc_inner = INITPROC.inner_exclusive_access();
         for child in inner.children.iter() {
             child.inner_exclusive_access().parent = Some(Arc::downgrade(&INITPROC));
@@ -99,7 +100,7 @@ pub fn exit_current_and_run_next(exit_code: i32) {
     // **** release current PCB
     // drop task manually to maintain rc correctly
     drop(task);
-    // we do not have to save task context
+    // we do not have to save task context 妙啊，切换时若不需要保存当前task的上下文时，就直接给个空白TaskContext
     let mut _unused = TaskContext::zero_init();
     schedule(&mut _unused as *mut _);
 }

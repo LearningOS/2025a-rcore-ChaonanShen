@@ -60,11 +60,11 @@ impl MemorySet {
         start_va: VirtAddr,
         end_va: VirtAddr,
         permission: MapPermission,
-    ) {
+    ) -> bool {
         self.push(
             MapArea::new(start_va, end_va, MapType::Framed, permission),
             None,
-        );
+        )
     }
     /// remove a area
     pub fn remove_area_with_start_vpn(&mut self, start_vpn: VirtPageNum) {
@@ -81,12 +81,16 @@ impl MemorySet {
     /// Add a new MapArea into this MemorySet.
     /// Assuming that there are no conflicts in the virtual address
     /// space.
-    fn push(&mut self, mut map_area: MapArea, data: Option<&[u8]>) {
-        map_area.map(&mut self.page_table);
+    fn push(&mut self, mut map_area: MapArea, data: Option<&[u8]>) -> bool {
+        if !map_area.map(&mut self.page_table) {
+            // map中有对物理内存不足的检查
+            return false;
+        }
         if let Some(data) = data {
             map_area.copy_data(&mut self.page_table, data);
         }
         self.areas.push(map_area);
+        true
     }
     /// Mention that trampoline is not collected by areas.
     fn map_trampoline(&mut self) {
@@ -251,7 +255,9 @@ impl MemorySet {
             elf.header.pt2.entry_point() as usize,
         )
     }
+
     /// Create a new address space by copy code&data from a exited process's address space.
+    /// 为了支持fork，每个内核对象都要提供复制自身的函数
     pub fn from_existed_user(user_space: &Self) -> Self {
         let mut memory_set = Self::new_bare();
         // map trampoline
@@ -318,7 +324,23 @@ impl MemorySet {
             false
         }
     }
+
+    /// mmap
+    pub fn mmap(&mut self, start_va: VirtAddr, end_va: VirtAddr, prot: usize) -> bool {
+        let mut map_perm = MapPermission::U;
+        if prot & 0x1 != 0 {
+            map_perm |= MapPermission::R;
+        }
+        if prot & 0x2 != 0 {
+            map_perm |= MapPermission::W;
+        }
+        if prot & 0x4 != 0 {
+            map_perm |= MapPermission::X;
+        }
+        self.insert_framed_area(start_va, end_va, map_perm)
+    }
 }
+
 /// map area structure, controls a contiguous piece of virtual memory
 pub struct MapArea {
     vpn_range: VPNRange,
@@ -351,20 +373,26 @@ impl MapArea {
             map_perm: another.map_perm,
         }
     }
-    pub fn map_one(&mut self, page_table: &mut PageTable, vpn: VirtPageNum) {
+
+    // 加入对物理内存不足的检查(暂时没有其他检查)
+    pub fn map_one(&mut self, page_table: &mut PageTable, vpn: VirtPageNum) -> bool {
         let ppn: PhysPageNum;
         match self.map_type {
             MapType::Identical => {
                 ppn = PhysPageNum(vpn.0);
             }
             MapType::Framed => {
-                let frame = frame_alloc().unwrap();
-                ppn = frame.ppn;
-                self.data_frames.insert(vpn, frame);
+                if let Some(frame) = frame_alloc() {
+                    ppn = frame.ppn;
+                    self.data_frames.insert(vpn, frame);
+                } else {
+                    return false;
+                }
             }
         }
         let pte_flags = PTEFlags::from_bits(self.map_perm.bits).unwrap();
         page_table.map(vpn, ppn, pte_flags);
+        true
     }
     pub fn unmap_one(&mut self, page_table: &mut PageTable, vpn: VirtPageNum) {
         if self.map_type == MapType::Framed {
@@ -372,10 +400,13 @@ impl MapArea {
         }
         page_table.unmap(vpn);
     }
-    pub fn map(&mut self, page_table: &mut PageTable) {
+    pub fn map(&mut self, page_table: &mut PageTable) -> bool {
         for vpn in self.vpn_range {
-            self.map_one(page_table, vpn);
+            if !self.map_one(page_table, vpn) {
+                return false;
+            }
         }
+        true
     }
     pub fn unmap(&mut self, page_table: &mut PageTable) {
         for vpn in self.vpn_range {
@@ -392,7 +423,7 @@ impl MapArea {
     #[allow(unused)]
     pub fn append_to(&mut self, page_table: &mut PageTable, new_end: VirtPageNum) {
         for vpn in VPNRange::new(self.vpn_range.get_end(), new_end) {
-            self.map_one(page_table, vpn)
+            self.map_one(page_table, vpn);
         }
         self.vpn_range = VPNRange::new(self.vpn_range.get_start(), new_end);
     }
