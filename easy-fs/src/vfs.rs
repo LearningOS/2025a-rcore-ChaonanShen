@@ -10,6 +10,7 @@ use spin::{Mutex, MutexGuard};
 pub struct Inode {
     block_id: usize,
     block_offset: usize,
+    inode_id: u32,
     fs: Arc<Mutex<EasyFileSystem>>,
     block_device: Arc<dyn BlockDevice>,
 }
@@ -19,21 +20,23 @@ impl Inode {
     pub fn new(
         block_id: u32,
         block_offset: usize,
+        inode_id: u32, // DirEntry中inode_id就是u32保存的，尽管外界会转为u64
         fs: Arc<Mutex<EasyFileSystem>>,
         block_device: Arc<dyn BlockDevice>,
     ) -> Self {
         Self {
             block_id: block_id as usize,
             block_offset,
+            inode_id,
             fs,
             block_device,
         }
     }
-    /// Call a function over a disk inode to read it
+    /// Call a function over a disk inode to read it 根据self的block_id/block_offset读取内容内容，经过f作用后返回V
     fn read_disk_inode<V>(&self, f: impl FnOnce(&DiskInode) -> V) -> V {
         get_block_cache(self.block_id, Arc::clone(&self.block_device))
             .lock()
-            .read(self.block_offset, f)
+            .read(self.block_offset, f) // 隐式推断出read要读取类型是DiskInode(也即f的参数类型)
     }
     /// Call a function over a disk inode to modify it
     fn modify_disk_inode<V>(&self, f: impl FnOnce(&mut DiskInode) -> V) -> V {
@@ -41,7 +44,7 @@ impl Inode {
             .lock()
             .modify(self.block_offset, f)
     }
-    /// Find inode under a disk inode by name
+    /// Find inode under a disk inode by name  在DiskInode这个目录中找名为name的文件，这个DiskInode对应文件中数据都是DirEntry数组(rCore中只有根目录DiskInode)
     fn find_inode_id(&self, name: &str, disk_inode: &DiskInode) -> Option<u32> {
         // assert it is a directory
         assert!(disk_inode.is_dir());
@@ -67,6 +70,7 @@ impl Inode {
                 Arc::new(Self::new(
                     block_id,
                     block_offset,
+                    inode_id,
                     self.fs.clone(),
                     self.block_device.clone(),
                 ))
@@ -110,7 +114,7 @@ impl Inode {
         get_block_cache(new_inode_block_id as usize, Arc::clone(&self.block_device))
             .lock()
             .modify(new_inode_block_offset, |new_inode: &mut DiskInode| {
-                new_inode.initialize(DiskInodeType::File);
+                new_inode.initialize(DiskInodeType::File, 1); // 文件或目录创建的时候，Inode的引用计数都为1
             });
         self.modify_disk_inode(|root_inode| {
             // append file in the dirent
@@ -134,12 +138,13 @@ impl Inode {
         Some(Arc::new(Self::new(
             block_id,
             block_offset,
+            new_inode_id,
             self.fs.clone(),
             self.block_device.clone(),
         )))
         // release efs lock automatically by compiler
     }
-    /// List inodes under current inode
+    /// List inodes under current inode 应该也要确保只有目录才能调用ls吧，assert!(disk_inode.is_dir());
     pub fn ls(&self) -> Vec<String> {
         let _fs = self.fs.lock();
         self.read_disk_inode(|disk_inode| {
@@ -183,5 +188,14 @@ impl Inode {
             }
         });
         block_cache_sync_all();
+    }
+    /// 返回硬链接数量/是否是目录/inode_id
+    pub fn stat(&self) -> (u32, bool, u64) {
+        // 注意给外界调用的要上锁，哪怕是只读！
+        let mut _fs = self.fs.lock();
+
+        self.read_disk_inode(|disk_inode| {
+            (disk_inode.nlink, disk_inode.is_dir(), self.inode_id as u64)
+        })
     }
 }

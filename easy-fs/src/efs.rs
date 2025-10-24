@@ -76,7 +76,7 @@ impl EasyFileSystem {
         get_block_cache(root_inode_block_id as usize, Arc::clone(&block_device))
             .lock()
             .modify(root_inode_offset, |disk_inode: &mut DiskInode| {
-                disk_inode.initialize(DiskInodeType::Directory);
+                disk_inode.initialize(DiskInodeType::Directory, 1);
             });
         block_cache_sync_all();
         Arc::new(Mutex::new(efs))
@@ -109,11 +109,13 @@ impl EasyFileSystem {
         // acquire efs lock temporarily
         let (block_id, block_offset) = efs.lock().get_disk_inode_pos(0);
         // release efs lock
-        Inode::new(block_id, block_offset, Arc::clone(efs), block_device)
+        // 根目录的inode_id是0！
+        Inode::new(block_id, block_offset, 0, Arc::clone(efs), block_device) 
     }
     /// Get inode by id
     pub fn get_disk_inode_pos(&self, inode_id: u32) -> (u32, usize) {
-        let inode_size = core::mem::size_of::<DiskInode>();
+        let inode_size = core::mem::size_of::<DiskInode>(); // 应该要确保DiskInode大小是128B？
+        assert_eq!(inode_size, 128);
         let inodes_per_block = (BLOCK_SZ / inode_size) as u32;
         let block_id = self.inode_area_start_block + inode_id / inodes_per_block;
         (

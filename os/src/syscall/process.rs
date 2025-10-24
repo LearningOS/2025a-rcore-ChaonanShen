@@ -5,8 +5,7 @@ use alloc::sync::Arc;
 use crate::{
     fs::{open_file, OpenFlags},
     mm::{
-        translated_refmut, translated_str, translated_ua2read, translated_ua2write, check_not_mapped,
-        VirtAddr, VirtPageNum,
+        check_not_mapped, pa_copyto_uva, translated_refmut, translated_str, VirtAddr, VirtPageNum,
     },
     task::{
         add_task, current_task, current_user_token, exit_current_and_run_next,
@@ -52,8 +51,8 @@ pub fn sys_fork() -> isize {
     // 注意子进程和父进程状态完全相同，并且子进程是模拟新进程那样，TaskContext用goto_trap_return，TrapContext就完全是父进程复制来的，所以回到用户态的状态(内核栈是新分配的，用户栈完全复制一样的，所以从syscall的下一个命令返回 - 因为sepc已经+=4)
     // 所以子进程下一次调度回去时，也是从一个syscall的trap返回，并且返回值是下边设置的x[10](a0)=0
     trap_cx.x[10] = 0; // TODO(scn): 这个为啥不直接在task::fork()中做了
-    // add new task to scheduler
-    // 这样直接把子进程放到队尾，按照目前FIFO调度设计，子进程必然晚于父进程执行啊（除非父进程调用yield）
+                       // add new task to scheduler
+                       // 这样直接把子进程放到队尾，按照目前FIFO调度设计，子进程必然晚于父进程执行啊（除非父进程调用yield）
     add_task(new_task);
     new_pid as isize
 }
@@ -79,7 +78,9 @@ pub fn sys_spawn(path: *const u8) -> isize {
     let token = current_user_token();
     let path = translated_str(token, path);
     if let Some(elf_data) = open_file(path.as_str(), OpenFlags::RDONLY) {
-        let new_task = current_task().unwrap().spawn(elf_data.read_all().as_slice());
+        let new_task = current_task()
+            .unwrap()
+            .spawn(elf_data.read_all().as_slice());
         let new_pid = new_task.pid.0;
         add_task(new_task);
         new_pid as isize
@@ -127,50 +128,6 @@ pub fn sys_waitpid(pid: isize, exit_code_ptr: *mut i32) -> isize {
     // ---- release current PCB automatically
 }
 
-/// 物理地址的src 拷贝数据到 用户态虚地址的dst - 内核态数据复制到用户空间虚地址，注意要检查虚地址是否有写权限
-#[allow(unused)]
-fn pa_copyto_uva(src: *const u8, src_len: usize, dst: *const u8, dst_len: usize) -> bool {
-    if let Some(dsts) = translated_ua2write(current_user_token(), dst, dst_len) {
-        let src = unsafe { core::slice::from_raw_parts(src, src_len) };
-
-        let mut idx = 0;
-        for dst in dsts {
-            // get能够安全返回切片
-            if let Some(sub_src) = src.get(idx..idx + dst.len()) {
-                dst.copy_from_slice(sub_src);
-                idx += dst.len();
-            } else {
-                return false;
-            }
-        }
-        true
-    } else {
-        false
-    }
-}
-
-/// 用户态虚地址的src 拷贝数据到 物理地址的dst - 从用户空间虚地址读取数据到内核态，注意要检查虚地址是否有读权限
-#[allow(unused)]
-fn uva_copyto_pa(src: *const u8, src_len: usize, dst: *mut u8, dst_len: usize) -> bool {
-    if let Some(srcs) = translated_ua2read(current_user_token(), src, src_len) {
-        let dst = unsafe { core::slice::from_raw_parts_mut(dst, dst_len) };
-
-        let mut idx = 0;
-        for src in srcs {
-            // get能够安全返回切片
-            if let Some(sub_dst) = dst.get_mut(idx..idx + src.len()) {
-                sub_dst.copy_from_slice(src);
-                idx += src.len();
-            } else {
-                return false;
-            }
-        }
-        true
-    } else {
-        false
-    }
-}
-
 /// YOUR JOB: get time with second and microsecond
 /// HINT: You might reimplement it with virtual memory management.
 /// HINT: What if [`TimeVal`] is splitted by two pages ?
@@ -186,7 +143,7 @@ pub fn sys_get_time(ts: *mut TimeVal, _tz: usize) -> isize {
     };
 
     let sz = core::mem::size_of::<TimeVal>();
-    if pa_copyto_uva(&tv as *const TimeVal as *const u8, sz, ts as *const u8, sz) {
+    if pa_copyto_uva(current_user_token(), &tv as *const TimeVal as *const u8, sz, ts as *const u8, sz) {
         0
     } else {
         -1

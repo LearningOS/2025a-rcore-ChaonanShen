@@ -6,7 +6,7 @@ use core::fmt::{Debug, Formatter, Result};
 /// Magic number for sanity check
 const EFS_MAGIC: u32 = 0x3b800001;
 /// The max number of direct inodes
-const INODE_DIRECT_COUNT: usize = 28;
+const INODE_DIRECT_COUNT: usize = 27;
 /// The max length of inode name
 const NAME_LENGTH_LIMIT: usize = 27;
 /// The max number of indirect1 inodes
@@ -82,6 +82,7 @@ type DataBlock = [u8; BLOCK_SZ];
 #[repr(C)]
 pub struct DiskInode {
     pub size: u32,
+    pub nlink: u32,
     pub direct: [u32; INODE_DIRECT_COUNT],
     pub indirect1: u32,
     pub indirect2: u32,
@@ -91,12 +92,25 @@ pub struct DiskInode {
 impl DiskInode {
     /// Initialize a disk inode, as well as all direct inodes under it
     /// indirect1 and indirect2 block are allocated only when they are needed
-    pub fn initialize(&mut self, type_: DiskInodeType) {
+    pub fn initialize(&mut self, type_: DiskInodeType, ref_cnt_: u32) {
         self.size = 0; // 以B为单位
+        self.nlink = ref_cnt_;
         self.direct.iter_mut().for_each(|v| *v = 0);
         self.indirect1 = 0;
         self.indirect2 = 0;
         self.type_ = type_;
+    }
+    /// inc ref_cnt - 在link_at时使用
+    #[allow(unused)]
+    pub fn inc_ref_cnt(&mut self) -> u32 {
+        self.nlink += 1;
+        self.nlink
+    }
+    /// dec ref_cnt - 在unlink_at时使用
+    #[allow(unused)]
+    pub fn dec_ref_cnt(&mut self) -> u32 {
+        self.nlink -= 1;
+        self.nlink
     }
     /// Whether this inode is a directory
     pub fn is_dir(&self) -> bool {
@@ -392,7 +406,7 @@ impl DiskInode {
 #[repr(C)]
 pub struct DirEntry {
     name: [u8; NAME_LENGTH_LIMIT + 1], // 28B 包括一个'\0'，所以文件名最长27字节
-    inode_id: u32, // 4B 总共28+4=32B 一个512B的blcok能放128个
+    inode_id: u32,                     // 4B 总共28+4=32B 一个512B的blcok能放128个
 }
 /// Size of a directory entry
 pub const DIRENT_SZ: usize = 32;

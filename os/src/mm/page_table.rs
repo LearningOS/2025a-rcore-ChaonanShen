@@ -1,5 +1,7 @@
 //! Implementation of [`PageTableEntry`] and [`PageTable`].
-use super::{frame_alloc, FrameTracker, PhysAddr, PhysPageNum, StepByOne, VirtAddr, VirtPageNum, VPNRange};
+use super::{
+    frame_alloc, FrameTracker, PhysAddr, PhysPageNum, StepByOne, VPNRange, VirtAddr, VirtPageNum,
+};
 use alloc::string::String;
 use alloc::vec;
 use alloc::vec::Vec;
@@ -168,7 +170,7 @@ impl PageTable {
             pte.is_valid()
         } else {
             false
-        }        
+        }
     }
 }
 
@@ -293,9 +295,28 @@ impl Iterator for UserBufferIterator {
     }
 }
 
+/// 检查start_vpn~end_vpn范围内所有页面都没有被映射（用于mmap前检查）
+pub fn check_not_mapped(token: usize, start_vpn: VirtPageNum, end_vpn: VirtPageNum) -> bool {
+    let page_table = PageTable::from_token(token);
+    let vpn_range = VPNRange::new(start_vpn, end_vpn);
+    // TODO(scn): 改成函数式写法
+    for vpn in vpn_range {
+        // 如果vpn已经被映射 - 说明有问题
+        if page_table.check_mapped_one(vpn) {
+            return false;
+        }
+    }
+    true
+}
+
+// ------------ 以下是一些内核态读写用户态虚地址的方法
 
 /// 传入用户态虚地址ptr（并要检查是否有写权限），未来将写入数据
-pub fn translated_ua2write(token: usize, ptr: *const u8, len: usize) -> Option<Vec<&'static mut [u8]>> {
+pub fn translated_ua2write(
+    token: usize,
+    ptr: *const u8,
+    len: usize,
+) -> Option<Vec<&'static mut [u8]>> {
     let page_table = PageTable::from_token(token);
     let mut start = ptr as usize;
     let end = start + len;
@@ -313,7 +334,9 @@ pub fn translated_ua2write(token: usize, ptr: *const u8, len: usize) -> Option<V
                 if end_va.page_offset() == 0 {
                     v.push(&mut ppn.get_bytes_array()[start_va.page_offset()..]);
                 } else {
-                    v.push(&mut ppn.get_bytes_array()[start_va.page_offset()..end_va.page_offset()]);
+                    v.push(
+                        &mut ppn.get_bytes_array()[start_va.page_offset()..end_va.page_offset()],
+                    );
                 }
                 start = end_va.into();
             } else {
@@ -358,16 +381,57 @@ pub fn translated_ua2read(token: usize, ptr: *const u8, len: usize) -> Option<Ve
     Some(v)
 }
 
-/// 检查start_vpn~end_vpn范围内所有页面都没有被映射（用于mmap前检查）
-pub fn check_not_mapped(token: usize, start_vpn: VirtPageNum, end_vpn: VirtPageNum) -> bool {
-    let page_table = PageTable::from_token(token);
-    let vpn_range = VPNRange::new(start_vpn, end_vpn);
-    // TODO(scn): 改成函数式写法
-    for vpn in vpn_range {
-        // 如果vpn已经被映射 - 说明有问题
-        if page_table.check_mapped_one(vpn) {
-            return false;
+/// 物理地址的src 拷贝数据到 用户态虚地址的dst - 内核态数据复制到用户空间虚地址，注意要检查虚地址是否有写权限
+pub fn pa_copyto_uva(
+    token: usize,
+    src: *const u8,
+    src_len: usize,
+    dst: *const u8,
+    dst_len: usize,
+) -> bool {
+    if let Some(dsts) = translated_ua2write(token, dst, dst_len) {
+        let src = unsafe { core::slice::from_raw_parts(src, src_len) };
+
+        let mut idx = 0;
+        for dst in dsts {
+            // get能够安全返回切片
+            if let Some(sub_src) = src.get(idx..idx + dst.len()) {
+                dst.copy_from_slice(sub_src);
+                idx += dst.len();
+            } else {
+                return false;
+            }
         }
+        true
+    } else {
+        false
     }
-    true
+}
+
+/// 用户态虚地址的src 拷贝数据到 物理地址的dst - 从用户空间虚地址读取数据到内核态，注意要检查虚地址是否有读权限
+#[allow(unused)]
+pub fn uva_copyto_pa(
+    token: usize,
+    src: *const u8,
+    src_len: usize,
+    dst: *mut u8,
+    dst_len: usize,
+) -> bool {
+    if let Some(srcs) = translated_ua2read(token, src, src_len) {
+        let dst = unsafe { core::slice::from_raw_parts_mut(dst, dst_len) };
+
+        let mut idx = 0;
+        for src in srcs {
+            // get能够安全返回切片
+            if let Some(sub_dst) = dst.get_mut(idx..idx + src.len()) {
+                sub_dst.copy_from_slice(src);
+                idx += src.len();
+            } else {
+                return false;
+            }
+        }
+        true
+    } else {
+        false
+    }
 }
