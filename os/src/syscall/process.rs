@@ -10,7 +10,7 @@ use crate::{
     },
     task::{
         add_task, current_task, current_user_token, exit_current_and_run_next,
-        suspend_current_and_run_next, task_mmap,
+        suspend_current_and_run_next, task_mmap, task_munmap,
     },
     timer::get_time_us,
 };
@@ -188,7 +188,7 @@ pub fn sys_get_time(ts: *mut TimeVal, _tz: usize) -> isize {
 /// 3. prot & !0x7 != 0或者prot & 0x7 = 0 - prot 0-R 1-W 2-X 其他位必须为0
 /// 4. 物理内存不足
 pub fn sys_mmap(start: usize, len: usize, prot: usize) -> isize {
-    trace!("kernel: sys_mmap");
+    trace!("kernel:pid[{}] sys_mmap", current_task().unwrap().pid.0);
 
     let start_va: VirtAddr = start.into();
     // 检查start_va是否对齐
@@ -214,13 +214,27 @@ pub fn sys_mmap(start: usize, len: usize, prot: usize) -> isize {
     }
 }
 
-/// YOUR JOB: Implement munmap.
-pub fn sys_munmap(_start: usize, _len: usize) -> isize {
-    trace!(
-        "kernel:pid[{}] sys_munmap NOT IMPLEMENTED",
-        current_task().unwrap().pid.0
-    );
-    -1
+// YOUR JOB: Implement munmap.
+/// 当前task的TCB的MemorySet(包含页表)中，将[start, start+len)区域解除映射
+/// 出错类型：都返回-1
+/// 1. start没有按页对齐
+/// 2. [start, start+len)中有页面没有映射过（说明当前munmap把一些没有mmap过的区域也包含进去了）
+pub fn sys_munmap(start: usize, len: usize) -> isize {
+    trace!("kernel:pid[{}] sys_munmap", current_task().unwrap().pid.0);
+
+    let start_va: VirtAddr = start.into();
+    // 检查start_va是否对齐
+    if !start_va.aligned() {
+        return -1;
+    }
+
+    // task_munmap会检查之前是否存在这个映射(通过查找MapArea)，如果存在就删除(页表相关也删除)，不存在对应MapArea就算出错
+    let end_va: VirtAddr = (start + len).into();
+    if task_munmap(start_va, end_va) {
+        0
+    } else {
+        -1
+    }
 }
 
 /// change data segment size
