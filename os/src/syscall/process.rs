@@ -51,7 +51,7 @@ pub fn sys_fork() -> isize {
     // 要让子进程中fork返回0就这么简单
     // 注意子进程和父进程状态完全相同，并且子进程是模拟新进程那样，TaskContext用goto_trap_return，TrapContext就完全是父进程复制来的，所以回到用户态的状态(内核栈是新分配的，用户栈完全复制一样的，所以从syscall的下一个命令返回 - 因为sepc已经+=4)
     // 所以子进程下一次调度回去时，也是从一个syscall的trap返回，并且返回值是下边设置的x[10](a0)=0
-    trap_cx.x[10] = 0;
+    trap_cx.x[10] = 0; // TODO(scn): 这个为啥不直接在task::fork()中做了
     // add new task to scheduler
     // 这样直接把子进程放到队尾，按照目前FIFO调度设计，子进程必然晚于父进程执行啊（除非父进程调用yield）
     add_task(new_task);
@@ -67,6 +67,22 @@ pub fn sys_exec(path: *const u8) -> isize {
         let task = current_task().unwrap();
         task.exec(all_data.as_slice());
         0
+    } else {
+        -1
+    }
+}
+
+/// YOUR JOB: Implement spawn.
+/// HINT: fork + exec =/= spawn
+pub fn sys_spawn(path: *const u8) -> isize {
+    trace!("kernel:pid[{}] sys_spawn", current_task().unwrap().pid.0);
+    let token = current_user_token();
+    let path = translated_str(token, path);
+    if let Some(elf_data) = open_file(path.as_str(), OpenFlags::RDONLY) {
+        let new_task = current_task().unwrap().spawn(elf_data.read_all().as_slice());
+        let new_pid = new_task.pid.0;
+        add_task(new_task);
+        new_pid as isize
     } else {
         -1
     }
@@ -159,10 +175,7 @@ fn uva_copyto_pa(src: *const u8, src_len: usize, dst: *mut u8, dst_len: usize) -
 /// HINT: You might reimplement it with virtual memory management.
 /// HINT: What if [`TimeVal`] is splitted by two pages ?
 pub fn sys_get_time(ts: *mut TimeVal, _tz: usize) -> isize {
-    trace!(
-        "kernel:pid[{}] sys_get_time NOT IMPLEMENTED",
-        current_task().unwrap().pid.0
-    );
+    trace!("kernel:pid[{}] sys_get_time", current_task().unwrap().pid.0);
 
     let us = get_time_us();
 
@@ -245,16 +258,6 @@ pub fn sys_sbrk(size: i32) -> isize {
     } else {
         -1
     }
-}
-
-/// YOUR JOB: Implement spawn.
-/// HINT: fork + exec =/= spawn
-pub fn sys_spawn(_path: *const u8) -> isize {
-    trace!(
-        "kernel:pid[{}] sys_spawn NOT IMPLEMENTED",
-        current_task().unwrap().pid.0
-    );
-    -1
 }
 
 // YOUR JOB: Set task priority.
