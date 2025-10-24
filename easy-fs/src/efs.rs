@@ -130,6 +130,10 @@ impl EasyFileSystem {
         self.inode_bitmap.alloc(&self.block_device).unwrap() as u32
     }
 
+    /// Deallocate an inode block
+    // 甚至都不用将对应inode entry清零，只需bitmap里对应bit清零即可
+    // 不过传入什么参数好呢？data block可以直接传入block_id，但inode block是4个inode entry组成
+
     /// Allocate a data block
     pub fn alloc_data(&mut self) -> u32 {
         self.data_bitmap.alloc(&self.block_device).unwrap() as u32 + self.data_area_start_block

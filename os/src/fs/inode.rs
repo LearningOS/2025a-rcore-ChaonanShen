@@ -20,7 +20,7 @@ use lazy_static::*;
 pub struct OSInode {
     readable: bool,
     writable: bool,
-    inner: UPSafeCell<OSInodeInner>,
+    inner: UPSafeCell<OSInodeInner>, // 依然是可变部分用XXInner包裹
 }
 /// The OS inode inner in 'UPSafeCell'
 pub struct OSInodeInner {

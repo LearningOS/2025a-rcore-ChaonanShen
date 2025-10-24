@@ -75,7 +75,7 @@ pub enum DiskInodeType {
 }
 
 /// A indirect block
-type IndirectBlock = [u32; BLOCK_SZ / 4];
+type IndirectBlock = [u32; BLOCK_SZ / 4]; // 放128个u32，每个u32对应一个block_id
 /// A data block
 type DataBlock = [u8; BLOCK_SZ];
 /// A disk inode
@@ -92,7 +92,7 @@ impl DiskInode {
     /// Initialize a disk inode, as well as all direct inodes under it
     /// indirect1 and indirect2 block are allocated only when they are needed
     pub fn initialize(&mut self, type_: DiskInodeType) {
-        self.size = 0;
+        self.size = 0; // 以B为单位
         self.direct.iter_mut().for_each(|v| *v = 0);
         self.indirect1 = 0;
         self.indirect2 = 0;
@@ -391,8 +391,8 @@ impl DiskInode {
 /// A directory entry
 #[repr(C)]
 pub struct DirEntry {
-    name: [u8; NAME_LENGTH_LIMIT + 1],
-    inode_id: u32,
+    name: [u8; NAME_LENGTH_LIMIT + 1], // 28B 包括一个'\0'，所以文件名最长27字节
+    inode_id: u32, // 4B 总共28+4=32B 一个512B的blcok能放128个
 }
 /// Size of a directory entry
 pub const DIRENT_SZ: usize = 32;

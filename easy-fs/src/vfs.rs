@@ -96,7 +96,7 @@ impl Inode {
         let op = |root_inode: &DiskInode| {
             // assert it is a directory
             assert!(root_inode.is_dir());
-            // has the file been created?
+            // has the file been created? 如果已经有同名文件
             self.find_inode_id(name, root_inode)
         };
         if self.read_disk_inode(op).is_some() {
@@ -127,6 +127,7 @@ impl Inode {
             );
         });
 
+        // 这个之前new_inode_block_id/new_inode_block_offset不是已经获取过了？
         let (block_id, block_offset) = fs.get_disk_inode_pos(new_inode_id);
         block_cache_sync_all();
         // return inode

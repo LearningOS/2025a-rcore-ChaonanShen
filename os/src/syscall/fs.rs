@@ -71,7 +71,7 @@ pub fn sys_close(fd: usize) -> isize {
     if inner.fd_table[fd].is_none() {
         return -1;
     }
-    inner.fd_table[fd].take();
+    inner.fd_table[fd].take(); // 就是这么简单！把一个Option变为None直接move走即可
     0
 }
 

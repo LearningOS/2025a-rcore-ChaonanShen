@@ -30,6 +30,7 @@ fn main() {
 }
 
 fn easy_fs_pack() -> std::io::Result<()> {
+    // cargo run --release -- -s ../user/build/app/ -t ../user/target/riscv64gc-unknown-none-elf/release/
     let matches = App::new("EasyFileSystem packer")
         .arg(
             Arg::with_name("source")
