@@ -32,7 +32,9 @@ impl Inode {
             block_device,
         }
     }
-    /// Call a function over a disk inode to read it 根据self的block_id/block_offset读取内容内容，经过f作用后返回V
+
+    /// Call a function over a disk inode to read it
+    /// 根据self的block_id/block_offset读取内容*并转换为DiskInode*，然后就能用f对DiskInode进行各种读操作了，经过f作用后返回V
     fn read_disk_inode<V>(&self, f: impl FnOnce(&DiskInode) -> V) -> V {
         get_block_cache(self.block_id, Arc::clone(&self.block_device))
             .lock()
@@ -46,12 +48,13 @@ impl Inode {
     }
     /// Find inode under a disk inode by name  在DiskInode这个目录中找名为name的文件，这个DiskInode对应文件中数据都是DirEntry数组(rCore中只有根目录DiskInode)
     fn find_inode_id(&self, name: &str, disk_inode: &DiskInode) -> Option<u32> {
-        // assert it is a directory
+        // assert it is a directory  只有根目录root_node才能调用find/find_inode_id(efs只有根目录一个目录)
         assert!(disk_inode.is_dir());
         let file_count = (disk_inode.size as usize) / DIRENT_SZ;
         let mut dirent = DirEntry::empty();
         for i in 0..file_count {
             assert_eq!(
+                // disk_inode的read_at是读写DiskInode代表的文件内容
                 disk_inode.read_at(DIRENT_SZ * i, dirent.as_bytes_mut(), &self.block_device,),
                 DIRENT_SZ,
             );
@@ -61,7 +64,7 @@ impl Inode {
         }
         None
     }
-    /// Find inode under current inode by name
+    /// Find inode under current inode by name  
     pub fn find(&self, name: &str) -> Option<Arc<Inode>> {
         let fs = self.fs.lock();
         self.read_disk_inode(|disk_inode| {
@@ -94,7 +97,7 @@ impl Inode {
         }
         disk_inode.increase_size(new_size, v, &self.block_device);
     }
-    /// Create inode under current inode by name
+    /// Create inode under current inode by name 只有根目录root_node才能调用create(efs只有根目录一个目录)
     pub fn create(&self, name: &str) -> Option<Arc<Inode>> {
         let mut fs = self.fs.lock();
         let op = |root_inode: &DiskInode| {
@@ -144,6 +147,57 @@ impl Inode {
         )))
         // release efs lock automatically by compiler
     }
+
+    /// 获取文件的硬链接数量
+    pub fn nlinks(&self) -> u32 {
+        let _fs = self.fs.lock(); // 是不是外界调用，fs就得上锁？
+        self.read_disk_inode(|disk_inode| disk_inode.nlink)
+    }
+
+    /// 创建硬链接 - 注意，这个函数也只能根目录root_node调用
+    pub fn link_at(&self, old_name: &str, new_name: &str) -> isize {
+        // 上层已经确认old_name!=new_name，还要确认old_name存在，且new_name不存在
+        let mut fs = self.fs.lock();
+
+        // step1: 确认old_name文件存在，且new_name文件不存在，否则直接返回
+        let (old_inode_id, new_inode_id) = self.read_disk_inode(|root_inode| {
+            (
+                self.find_inode_id(old_name, root_inode),
+                self.find_inode_id(new_name, root_inode),
+            )
+        });
+        if old_inode_id.is_none() || new_inode_id.is_some() {
+            return -1;
+        }
+
+        // 其实step1/step2跟create很像的，要修改DiskInode(create是新建个DiskInode然后初始化)，要在root_inode之后加个DirEntry
+
+        // step2: 找到旧文件的DiskInode并nlink+=1，然后写回
+        let (old_inode_block_id, old_inode_block_offset) =
+            fs.get_disk_inode_pos(old_inode_id.unwrap());
+        // 获取旧文件DiskInode所在块
+        get_block_cache(old_inode_block_id as usize, Arc::clone(&self.block_device))
+            .lock()
+            .modify(old_inode_block_offset, |disk_inode: &mut DiskInode| {
+                disk_inode.inc_nlink(); // 这个modify其实把OS Cache中的DiskInode缓存修改了，之后写回
+            });
+
+        // step3: 在root_inode根目录下创建新文件的DirEntry并且写入文件名和inode_id，但是不分配新的inode
+        self.modify_disk_inode(|root_inode| {
+            // append file in the dirent
+            let de_count = (root_inode.size as usize) / DIRENT_SZ;
+            let new_size = (de_count + 1) * DIRENT_SZ;
+            // increase_size
+            self.increase_size(new_size as u32, root_inode, &mut fs);
+            // write dirent
+            let dirent = DirEntry::new(new_name, old_inode_id.unwrap()); // 共享底层的Inode/DiskInode
+            root_inode.write_at(de_count * DIRENT_SZ, dirent.as_bytes(), &self.block_device);
+        });
+
+        block_cache_sync_all();
+        0
+    }
+
     /// List inodes under current inode 应该也要确保只有目录才能调用ls吧，assert!(disk_inode.is_dir());
     pub fn ls(&self) -> Vec<String> {
         let _fs = self.fs.lock();
@@ -166,7 +220,7 @@ impl Inode {
         let _fs = self.fs.lock();
         self.read_disk_inode(|disk_inode| disk_inode.read_at(offset, buf, &self.block_device))
     }
-    /// Write data to current inode
+    /// Write data to current inode  注意Inode::write_at会自动sync同步，但DiskInode::write_at不会主动同步
     pub fn write_at(&self, offset: usize, buf: &[u8]) -> usize {
         let mut fs = self.fs.lock();
         let size = self.modify_disk_inode(|disk_inode| {
@@ -199,3 +253,11 @@ impl Inode {
         })
     }
 }
+
+/*
+TODO(scn): 我发现对Inode的读写都是传入&self不可变引用
+但里面依然自由修改fs: Arc<Mutex<EasyFileSystem>>指向的文件系统
+这点之后要好好搞清楚，也就是说能阻止直接修改Inode的各个成员，但可以调用fs的可变引用函数来修改fs本身？
+确实！甚至create能self.fs.lock()生成一个可变的fs，之后fs.alloc_inode()也是会修改fs的
+不过这些其实是Rust语言问题
+*/

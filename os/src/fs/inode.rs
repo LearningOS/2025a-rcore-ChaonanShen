@@ -101,7 +101,7 @@ impl OpenFlags {
     }
 }
 
-/// Open a file
+/// Open a file     open_file在ROOT_INODE调用find等时会对easy-fs上锁
 pub fn open_file(name: &str, flags: OpenFlags) -> Option<Arc<OSInode>> {
     let (readable, writable) = flags.read_write();
     if flags.contains(OpenFlags::CREATE) {
@@ -123,6 +123,17 @@ pub fn open_file(name: &str, flags: OpenFlags) -> Option<Arc<OSInode>> {
             Arc::new(OSInode::new(readable, writable, inode))
         })
     }
+}
+
+/*
+TODO(scn): 我对哪里上锁比较疑惑，目前看open_file这种独立函数(没有OSInode)是在Inode这层上锁
+OSInode自身的read_all等函数是直接OSInodeInner上锁，这样OSInodeInner中Inode/offset等一定保证互斥访问
+我比较担心的是好多层都对EasyFileSystem上锁 - 似乎层级还是很难搞清楚
+*/
+
+/// 创建硬链接 
+pub fn link_at(old_name: &str, new_name: &str) -> isize {
+    ROOT_INODE.link_at(old_name, new_name) // 给到Inode层级去做，上锁也是Inode那层上锁
 }
 
 impl File for OSInode {

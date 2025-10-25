@@ -218,7 +218,6 @@ pub fn translated_str(token: usize, ptr: *const u8) -> String {
 
 #[allow(unused)]
 /// Translate a ptr[u8] array through page table and return a reference of T
-// 这个函数似乎没考虑跨物理页的问题啊？是默认T结构一定在物理页中？
 pub fn translated_ref<T>(token: usize, ptr: *const T) -> &'static T {
     let page_table = PageTable::from_token(token);
     page_table
@@ -227,6 +226,7 @@ pub fn translated_ref<T>(token: usize, ptr: *const T) -> &'static T {
         .get_ref()
 }
 
+// 这个函数似乎没考虑跨物理页的问题啊？是默认T结构一定在同一个物理页中？ => 确实有，要确保T是在同一个物理页内
 /// Translate a ptr[u8] array through page table and return a mutable reference of T
 pub fn translated_refmut<T>(token: usize, ptr: *mut T) -> &'static mut T {
     let page_table = PageTable::from_token(token);

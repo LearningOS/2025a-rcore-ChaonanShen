@@ -26,7 +26,7 @@ impl BlockDevice for BlockFile {
 }
 
 fn main() {
-    easy_fs_pack().expect("Error when packing easy-fs!");
+    easy_fs_pack().expect("Error when packing easy-fs!"); // 为rCore建立fs.img文件系统镜像
 }
 
 fn easy_fs_pack() -> std::io::Result<()> {
@@ -99,22 +99,78 @@ fn efs_test() -> std::io::Result<()> {
         f.set_len(8192 * 512).unwrap();
         f
     })));
-    EasyFileSystem::create(block_file.clone(), 4096, 1);
-    let efs = EasyFileSystem::open(block_file.clone());
-    let root_inode = EasyFileSystem::root_inode(&efs);
-    root_inode.create("filea");
-    root_inode.create("fileb");
-    for name in root_inode.ls() {
-        println!("{}", name);
-    }
-    let filea = root_inode.find("filea").unwrap();
-    let greet_str = "Hello, world!";
-    filea.write_at(0, greet_str.as_bytes());
-    //let mut buffer = [0u8; 512];
-    let mut buffer = [0u8; 233];
-    let len = filea.read_at(0, &mut buffer);
-    assert_eq!(greet_str, core::str::from_utf8(&buffer[..len]).unwrap(),);
+    EasyFileSystem::create(block_file.clone(), 4096, 1); // 创建一个文件系统
+    let efs = EasyFileSystem::open(block_file.clone()); // 打开一个文件系统
+    let root_inode = EasyFileSystem::root_inode(&efs); // 获取root_inode根目录节点
 
+    // 创建文件
+    root_inode.create("filea");
+    root_inode.create("fileb"); // 创建两个文件
+                                // 罗列所有文件
+    println!("first ls");
+    for name in root_inode.ls() {
+        let file = root_inode.find(&name).unwrap();
+        let (nlink, is_dir, inode_id) = file.stat();
+        println!(
+            "name={} inode_id={} nlink={} is_dir={}",
+            name,
+            inode_id,
+            nlink,
+            is_dir,
+        );
+    }
+
+    let filea = root_inode.find("filea").unwrap(); // 返回Inode
+    // 查找、读写文件
+    {
+        let greet_str = "Hello, world!";
+        filea.write_at(0, greet_str.as_bytes()); // 向文件filea写入数据，Inode::write_at会主动同步
+        //let mut buffer = [0u8; 512];
+        let mut buffer = [0u8; 233];
+        let len = filea.read_at(0, &mut buffer);
+        assert_eq!(greet_str, core::str::from_utf8(&buffer[..len]).unwrap());
+    }
+
+    // link_at链接
+    {
+        assert_eq!(filea.nlinks(), 1);
+        root_inode.link_at("filea", "filec");
+        assert_eq!(filea.nlinks(), 2);
+        root_inode.link_at("filea", "filed");
+        assert_eq!(filea.nlinks(), 3);
+        root_inode.link_at("filed", "filee");
+        assert_eq!(filea.nlinks(), 4);
+    }
+
+    println!("second ls");
+    for name in root_inode.ls() {
+        let file = root_inode.find(&name).unwrap();
+        let (nlink, is_dir, inode_id) = file.stat();
+        println!(
+            "name={} inode_id={} nlink={} is_dir={}",
+            name,
+            inode_id,
+            nlink,
+            is_dir,
+        );
+    }
+
+
+    // 读写硬链接的 filed写入，filec读出
+    let filed = root_inode.find("filed").unwrap(); // 返回Inode
+    let filec = root_inode.find("filec").unwrap();
+    {
+        let greet_str = "Hello, EasyFileSystem!";
+        filed.write_at(0, greet_str.as_bytes()); // 向文件filed写入数据，Inode::write_at会主动同步
+        //let mut buffer = [0u8; 512];
+        let mut buffer = [0u8; 233];
+        let len = filec.read_at(0, &mut buffer);
+        assert_eq!(greet_str, core::str::from_utf8(&buffer[..len]).unwrap());
+
+        println!("filec: {}", core::str::from_utf8(&filec.read_all()).unwrap());
+    }
+
+    let mut buffer = [0u8; 233];
     let mut random_str_test = |len: usize| {
         filea.clear();
         assert_eq!(filea.read_at(0, &mut buffer), 0,);

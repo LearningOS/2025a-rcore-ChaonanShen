@@ -81,7 +81,7 @@ impl EasyFileSystem {
         block_cache_sync_all();
         Arc::new(Mutex::new(efs))
     }
-    /// Open a block device as a filesystem
+    /// Open a block device as a filesystem  读取0号SuperBlock，就能把握整个文件系统了
     pub fn open(block_device: Arc<dyn BlockDevice>) -> Arc<Mutex<Self>> {
         // read SuperBlock
         get_block_cache(0, Arc::clone(&block_device))
@@ -103,7 +103,7 @@ impl EasyFileSystem {
                 Arc::new(Mutex::new(efs))
             })
     }
-    /// Get the root inode of the filesystem
+    /// Get the root inode of the filesystem 获取root_inode，查找文件等都从root_inode开始
     pub fn root_inode(efs: &Arc<Mutex<Self>>) -> Inode {
         let block_device = Arc::clone(&efs.lock().block_device);
         // acquire efs lock temporarily
