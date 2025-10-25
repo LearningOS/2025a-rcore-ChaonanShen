@@ -89,6 +89,7 @@ pub struct DiskInode {
     type_: DiskInodeType,
 }
 
+// 注意，操作DiskInode不需要上锁，上层的Inode会确保并发访问
 impl DiskInode {
     /// Initialize a disk inode, as well as all direct inodes under it
     /// indirect1 and indirect2 block are allocated only when they are needed
@@ -106,7 +107,6 @@ impl DiskInode {
         self.nlink
     }
     /// dec ref_cnt - 在unlink_at时使用
-    #[allow(unused)]
     pub fn dec_nlink(&mut self) -> u32 {
         self.nlink -= 1;
         self.nlink
@@ -174,7 +174,7 @@ impl DiskInode {
                 })
         }
     }
-    /// Inncrease the size of current disk inode
+    /// Inncrease the size of current disk inode 
     pub fn increase_size(
         &mut self,
         new_size: u32,

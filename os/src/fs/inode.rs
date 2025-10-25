@@ -136,6 +136,11 @@ pub fn link_at(old_name: &str, new_name: &str) -> isize {
     ROOT_INODE.link_at(old_name, new_name) // 给到Inode层级去做，上锁也是Inode那层上锁
 }
 
+/// 删除硬链接
+pub fn unlink_at(name: &str) -> isize {
+    ROOT_INODE.unlink_at(name)
+}
+
 impl File for OSInode {
     fn readable(&self) -> bool {
         self.readable

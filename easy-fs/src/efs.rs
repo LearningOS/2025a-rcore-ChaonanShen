@@ -103,7 +103,7 @@ impl EasyFileSystem {
                 Arc::new(Mutex::new(efs))
             })
     }
-    /// Get the root inode of the filesystem 获取root_inode，查找文件等都从root_inode开始
+    /// Get the root inode of the filesystem 获取root_inode，查找文件等都从root_inode开始 居然也要上锁！
     pub fn root_inode(efs: &Arc<Mutex<Self>>) -> Inode {
         let block_device = Arc::clone(&efs.lock().block_device);
         // acquire efs lock temporarily
@@ -112,7 +112,7 @@ impl EasyFileSystem {
         // 根目录的inode_id是0！
         Inode::new(block_id, block_offset, 0, Arc::clone(efs), block_device) 
     }
-    /// Get inode by id
+    /// Get inode by inode_id
     pub fn get_disk_inode_pos(&self, inode_id: u32) -> (u32, usize) {
         let inode_size = core::mem::size_of::<DiskInode>(); // 应该要确保DiskInode大小是128B？
         assert_eq!(inode_size, 128);
@@ -127,20 +127,22 @@ impl EasyFileSystem {
     pub fn get_data_block_id(&self, data_block_id: u32) -> u32 {
         self.data_area_start_block + data_block_id
     }
-    /// Allocate a new inode
+    /// Allocate a new inode 返回inode_id
     pub fn alloc_inode(&mut self) -> u32 {
         self.inode_bitmap.alloc(&self.block_device).unwrap() as u32
     }
 
-    /// Deallocate an inode block
-    // 甚至都不用将对应inode entry清零，只需bitmap里对应bit清零即可
-    // 不过传入什么参数好呢？data block可以直接传入block_id，但inode block是4个inode entry组成
+    /// Deallocate an inode block 传入inode_id 
+    /// 注意，删除数据块的工作由外部用dealloc_data去做，这里只是删除inode entry(也即一个block放四条的DirEntry)在bitmap中位置
+    pub fn dealloc_inode(&mut self, inode_id: u32) {
+        self.inode_bitmap.dealloc(&self.block_device, inode_id as usize);
+    }
 
-    /// Allocate a data block
+    /// Allocate a data block 返回block_id
     pub fn alloc_data(&mut self) -> u32 {
         self.data_bitmap.alloc(&self.block_device).unwrap() as u32 + self.data_area_start_block
     }
-    /// Deallocate a data block
+    /// Deallocate a data block 传入block_id，不过相对data bitmap是用(block_id-data_area_start_block)
     pub fn dealloc_data(&mut self, block_id: u32) {
         get_block_cache(block_id as usize, Arc::clone(&self.block_device))
             .lock()

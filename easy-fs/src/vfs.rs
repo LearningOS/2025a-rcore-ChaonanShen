@@ -80,7 +80,7 @@ impl Inode {
             })
         })
     }
-    /// Increase the size of a disk inode
+    /// Increase the size of a DiskInode
     fn increase_size(
         &self,
         new_size: u32,
@@ -96,6 +96,23 @@ impl Inode {
             v.push(fs.alloc_data());
         }
         disk_inode.increase_size(new_size, v, &self.block_device);
+    }
+    /// Decrease the size of a DiskInode 从末尾移除block
+    fn decrease_size(
+        &self,
+        new_size: u32,
+        disk_inode: &mut DiskInode,
+        _fs: &mut MutexGuard<EasyFileSystem>,
+    ) {
+        if new_size >= disk_inode.size {
+            return;
+        }
+        let _blocks_dealloc =
+            DiskInode::total_blocks(disk_inode.size) - DiskInode::total_blocks(new_size);
+        // 从末尾移除 - 其实不如搞个办法按顺序获取所有data blocks的block_id，然后移除末尾几个
+        // TODO(scn): 为了简单起见，我暂时不回收data block - 模仿DiskInode::increase_size/clear_size都要命的长
+        // 回收的时候，还要注意一级/二级间接索引块的回收！
+        disk_inode.size = new_size;
     }
     /// Create inode under current inode by name 只有根目录root_node才能调用create(efs只有根目录一个目录)
     pub fn create(&self, name: &str) -> Option<Arc<Inode>> {
@@ -184,7 +201,7 @@ impl Inode {
 
         // step3: 在root_inode根目录下创建新文件的DirEntry并且写入文件名和inode_id，但是不分配新的inode
         self.modify_disk_inode(|root_inode| {
-            // append file in the dirent
+            // append file in the dirent 学习Inode::create中在root_inode末尾加个DirEntry
             let de_count = (root_inode.size as usize) / DIRENT_SZ;
             let new_size = (de_count + 1) * DIRENT_SZ;
             // increase_size
@@ -194,6 +211,82 @@ impl Inode {
             root_inode.write_at(de_count * DIRENT_SZ, dirent.as_bytes(), &self.block_device);
         });
 
+        block_cache_sync_all();
+        0
+    }
+
+    /// 删除硬链接 - 注意，这个函数也只能根目录root_inode调用
+    /// 几个操作应该一气呵成，不能分多步，不然的话中间可能被其他文件操作打断
+    pub fn unlink_at(&self, name: &str) -> isize {
+        let mut fs = self.fs.lock();
+
+        // step1: 确认name文件存在，不存在直接返回 - 如果存在，还需要返回是第几个DirEntry - 模仿find_inode_id写法
+        let (inode_id, dirent_idx) = self.read_disk_inode(|root_inode| {
+            assert!(root_inode.is_dir());
+            let file_count = (root_inode.size as usize) / DIRENT_SZ;
+            let mut dirent = DirEntry::empty();
+            for i in 0..file_count {
+                assert_eq!(
+                    root_inode.read_at(DIRENT_SZ * i, dirent.as_bytes_mut(), &self.block_device),
+                    DIRENT_SZ
+                );
+
+                if dirent.name() == name {
+                    return (Some(dirent.inode_id() as u32), i);
+                }
+            }
+            (None, 0)
+        });
+        if inode_id.is_none() {
+            return -1;
+        }
+
+        // step2: 找到DiskInode并nlink-=1，然后写回
+        let inode_id = inode_id.unwrap();
+        let (block_id, block_offset) = fs.get_disk_inode_pos(inode_id);
+        // 获取文件DiskInode所在block
+        let nlink = get_block_cache(block_id as usize, Arc::clone(&self.block_device))
+            .lock()
+            .modify(block_offset, |disk_inode: &mut DiskInode| {
+                // disk_inode就是name对应文件的DiskInode
+                if disk_inode.dec_nlink() == 0 {
+                    // step3: 利用DiskInode删除文件 - 文件的data blocks回收，data block bitmap也顺便回收；inode bitmap回收(inode entry也即DiskInode应该不用清零，毕竟重新使用时会清零)
+                    // 模仿Inode::clear()，只不过clear会上锁
+                    let size = disk_inode.size;
+                    let data_blocks_dealloc = disk_inode.clear_size(&self.block_device);
+                    assert!(data_blocks_dealloc.len() == DiskInode::total_blocks(size) as usize);
+                    for data_block_id in data_blocks_dealloc.into_iter() {
+                        fs.dealloc_data(data_block_id); // data_block_id对应block回收，对应data bitmap也回收
+                    }
+                    // step4: 删除inode_id对应DiskInode(inode entry)这项
+                    fs.dealloc_inode(inode_id);
+                }
+                disk_inode.nlink
+            });
+
+        if nlink == 0 {
+            // step5: 删除文件在目录中的目录项DirEntry - DirEntry在根目录下顺序排列 用最后一条DirEntry覆盖name对应DirEntry，然后decrease_size(过程中可能回收几个block)
+            self.modify_disk_inode(|root_inode| {
+                // 学习Inode::create中在末尾加个DirEntry，改成覆盖
+                let file_count = (root_inode.size as usize) / DIRENT_SZ;
+                let new_size = (file_count - 1) * DIRENT_SZ;
+
+                // 把[new_size, size]位置的DirEntry内容读出来
+                let mut last_dirent = DirEntry::empty();
+                assert_eq!(
+                    root_inode.read_at(new_size, last_dirent.as_bytes_mut(), &self.block_device),
+                    DIRENT_SZ
+                );
+                root_inode.write_at(
+                    DIRENT_SZ * dirent_idx,
+                    last_dirent.as_bytes(),
+                    &self.block_device,
+                );
+
+                // 减少size大小，可能要回收block - 模仿increase_size写吧
+                self.decrease_size(new_size as u32, root_inode, &mut fs);
+            })
+        }
         block_cache_sync_all();
         0
     }
@@ -243,6 +336,7 @@ impl Inode {
         });
         block_cache_sync_all();
     }
+
     /// 返回硬链接数量/是否是目录/inode_id
     pub fn stat(&self) -> (u32, bool, u64) {
         // 注意给外界调用的要上锁，哪怕是只读！

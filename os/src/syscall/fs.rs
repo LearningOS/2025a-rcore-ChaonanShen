@@ -1,5 +1,5 @@
 //! File and filesystem-related syscalls
-use crate::fs::{open_file, link_at, OpenFlags, Stat};
+use crate::fs::{open_file, link_at, unlink_at, OpenFlags, Stat};
 use crate::mm::{pa_copyto_uva, translated_byte_buffer, translated_str, UserBuffer};
 use crate::task::{current_task, current_user_token};
 
@@ -122,7 +122,11 @@ pub fn sys_linkat(old_name: *const u8, new_name: *const u8) -> isize {
 }
 
 /// YOUR JOB: Implement unlinkat.
-pub fn sys_unlinkat(_name: *const u8) -> isize {
+pub fn sys_unlinkat(name: *const u8) -> isize {
     trace!("kernel:pid[{}] sys_unlinkat", current_task().unwrap().pid.0);
-    -1
+    let token = current_user_token();
+    let name = translated_str(token, name);
+
+    // 确认文件存在，如果unlink后nlink=0，要删除文件
+    unlink_at(name.as_str())
 }
