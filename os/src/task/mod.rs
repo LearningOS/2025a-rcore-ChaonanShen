@@ -31,7 +31,7 @@ use switch::__switch;
 
 pub use context::TaskContext;
 pub use id::{kstack_alloc, pid_alloc, KernelStack, PidHandle, IDLE_PID};
-pub use manager::{add_task, pid2process, remove_from_pid2process, remove_task, wakeup_task};
+pub use manager::{add_task, pid2process, remove_from_pid2process, remove_task, wakeup_task, wakeup_deadlock_task};
 pub use processor::{
     current_kstack_top, current_process, current_task, current_trap_cx, current_trap_cx_user_va,
     current_user_token, run_tasks, schedule, take_current_task,
@@ -59,7 +59,7 @@ pub fn suspend_current_and_run_next() {
 }
 
 /// Make current task blocked and switch to the next task.
-pub fn block_current_and_run_next() {
+pub fn block_current_and_run_next() { // suspend_xx是仍加到就绪队列，block_xx是需要加到其他阻塞资源block队列上
     let task = take_current_task().unwrap();
     let mut task_inner = task.inner_exclusive_access();
     let task_cx_ptr = &mut task_inner.task_cx as *mut TaskContext;

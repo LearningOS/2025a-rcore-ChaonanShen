@@ -111,6 +111,8 @@ use thread::*;
 
 use crate::fs::Stat;
 
+pub use sync::is_deadlock_detect_enabled;
+
 /// handle syscall exception with `syscall_id` and other arguments
 pub fn syscall(syscall_id: usize, args: [usize; 4]) -> isize {
     match syscall_id {

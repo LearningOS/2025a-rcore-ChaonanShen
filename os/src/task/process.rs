@@ -8,6 +8,7 @@ use super::{pid_alloc, PidHandle};
 use crate::fs::{File, Stdin, Stdout};
 use crate::mm::{translated_refmut, MemorySet, KERNEL_SPACE};
 use crate::sync::{Condvar, Mutex, Semaphore, UPSafeCell};
+use crate::task::TaskStatus;
 use crate::trap::{trap_handler, TrapContext};
 use alloc::string::String;
 use alloc::sync::{Arc, Weak};
@@ -81,6 +82,21 @@ impl ProcessControlBlockInner {
     /// get a task with tid in this process
     pub fn get_task(&self, tid: usize) -> Arc<TaskControlBlock> {
         self.tasks[tid].as_ref().unwrap().clone()
+    }
+    ///
+    pub fn no_other_ready_task(&self, current_tid: usize) -> bool {
+        for (tid, task) in self.tasks.iter().enumerate() {
+            if tid == current_tid {
+                continue;
+            }
+
+            if let Some(task) = task {
+                if task.inner_exclusive_access().task_status != TaskStatus::Blocked {
+                    return false;
+                }
+            }
+        }
+        true
     }
 }
 

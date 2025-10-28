@@ -1,6 +1,7 @@
 use crate::{
     mm::kernel_token,
-    task::{add_task, current_task, TaskControlBlock},
+    syscall::is_deadlock_detect_enabled,
+    task::{add_task, current_task, wakeup_deadlock_task, TaskControlBlock},
     trap::{trap_handler, TrapContext},
 };
 use alloc::sync::Arc;
@@ -99,6 +100,7 @@ pub fn sys_waittid(tid: usize) -> i32 {
     if task_inner.res.as_ref().unwrap().tid == tid {
         return -1;
     }
+    let current_tid = task_inner.res.as_ref().unwrap().tid;
     let mut exit_code: Option<i32> = None;
     let waited_task = process_inner.tasks[tid].as_ref();
     if let Some(waited_task) = waited_task {
@@ -114,6 +116,20 @@ pub fn sys_waittid(tid: usize) -> i32 {
         process_inner.tasks[tid] = None;
         exit_code
     } else {
+        // 检测是否有死锁
+        if is_deadlock_detect_enabled() && process_inner.no_other_ready_task(current_tid) {
+            // 除了当前的waittid线程外，其他所有线程都blocked，那就死锁了，把所有blocked线程用wakeup_deadlock_task唤醒
+            for sem in process_inner.semaphore_list.iter() {
+                if let Some(sem) = sem {
+                    let mut sem_inner = sem.inner.exclusive_access();
+                    for blocked_task in sem_inner.wait_queue.iter() {
+                        wakeup_deadlock_task(Arc::clone(blocked_task));
+                    }
+                    sem_inner.wait_queue.clear();
+                }
+            }
+        }
+
         // waited thread has not exited
         -2
     }

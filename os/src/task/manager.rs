@@ -11,7 +11,7 @@ use lazy_static::*;
 ///A array of `TaskControlBlock` that is thread-safe
 pub struct TaskManager {
     ready_queue: VecDeque<Arc<TaskControlBlock>>,
-    
+
     /// The stopping task, leave a reference so that the kernel stack will not be recycled when switching tasks
     stop_task: Option<Arc<TaskControlBlock>>,
 }
@@ -31,7 +31,7 @@ impl TaskManager {
     }
     /// Take a process out of the ready queue
     pub fn fetch(&mut self) -> Option<Arc<TaskControlBlock>> {
-        self.ready_queue.pop_front()
+            self.ready_queue.pop_front()
     }
     pub fn remove(&mut self, task: Arc<TaskControlBlock>) {
         if let Some((id, _)) = self
@@ -73,6 +73,16 @@ pub fn wakeup_task(task: Arc<TaskControlBlock>) {
     trace!("kernel: TaskManager::wakeup_task");
     let mut task_inner = task.inner_exclusive_access();
     task_inner.task_status = TaskStatus::Ready;
+    drop(task_inner);
+    add_task(task); // 注意，还是从之前block_current_and_run_next()的位置继续执行
+}
+
+/// 死锁时唤醒blocked task
+pub fn wakeup_deadlock_task(task: Arc<TaskControlBlock>) {
+    trace!("kernel: TaskManager::wakeup_task");
+    let mut task_inner = task.inner_exclusive_access();
+    task_inner.task_status = TaskStatus::Ready;
+    task_inner.found_deadlock = true;
     drop(task_inner);
     add_task(task);
 }

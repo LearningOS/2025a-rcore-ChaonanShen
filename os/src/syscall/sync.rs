@@ -1,3 +1,5 @@
+use core::sync::atomic::{AtomicBool, Ordering::SeqCst};
+
 use crate::sync::{Condvar, Mutex, MutexBlocking, MutexSpin, Semaphore};
 use crate::task::{block_current_and_run_next, current_process, current_task};
 use crate::timer::{add_timer, get_time_ms};
@@ -73,8 +75,7 @@ pub fn sys_mutex_lock(mutex_id: usize) -> isize {
     let mutex = Arc::clone(process_inner.mutex_list[mutex_id].as_ref().unwrap());
     drop(process_inner);
     drop(process);
-    mutex.lock();
-    0
+    mutex.lock()
 }
 /// mutex unlock syscall
 pub fn sys_mutex_unlock(mutex_id: usize) -> isize {
@@ -166,8 +167,8 @@ pub fn sys_semaphore_down(sem_id: usize) -> isize {
     let process_inner = process.inner_exclusive_access();
     let sem = Arc::clone(process_inner.semaphore_list[sem_id].as_ref().unwrap());
     drop(process_inner);
-    sem.down();
-    0
+
+    sem.down() // 死锁直接返回-0xdead
 }
 /// condvar create syscall
 pub fn sys_condvar_create() -> isize {
@@ -245,7 +246,19 @@ pub fn sys_condvar_wait(condvar_id: usize, mutex_id: usize) -> isize {
 /// enable deadlock detection syscall
 ///
 /// YOUR JOB: Implement deadlock detection, but might not all in this syscall
-pub fn sys_enable_deadlock_detect(_enabled: usize) -> isize {
-    trace!("kernel: sys_enable_deadlock_detect NOT IMPLEMENTED");
-    -1
+pub fn sys_enable_deadlock_detect(enabled: usize) -> isize {
+    trace!("kernel: sys_enable_deadlock_detect");
+    if enabled != 0 {
+        DEADLOCK_DETECT_ENABLED.store(true, SeqCst);
+    } else {
+        DEADLOCK_DETECT_ENABLED.store(false, SeqCst);
+    }
+    0
+}
+
+/// 是否开启死锁检测   TODO: 也可以像MutexSpin的locked那样用UPSafeCell然后exclusive_access()来访问，但感觉这样跟Arc<Mutex<bool>>也差不多
+static DEADLOCK_DETECT_ENABLED: AtomicBool = AtomicBool::new(false);
+/// 外界检测是否开启死锁检测
+pub fn is_deadlock_detect_enabled() -> bool {
+    DEADLOCK_DETECT_ENABLED.load(SeqCst)
 }
